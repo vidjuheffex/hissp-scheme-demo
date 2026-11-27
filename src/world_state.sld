@@ -1,0 +1,43 @@
+;; Mutable state that survives hot reloads.
+;;
+;; The terrain and scene libraries are re-executed on every save, which would
+;; reset any top-level `define`d counter or table. So everything that must
+;; persist (chunk entities, the worker's queues, the player, shader handles)
+;; lives in the `state` table here. This library is never reloaded; changing
+;; its shape needs a restart.
+
+(define-library (world state)
+  (export state state-ref state-set! lock work-available)
+  (import (scheme base)
+          (srfi 18)
+          (srfi 69))
+  (begin
+    (define state (make-hash-table))
+    (define (state-ref key) (hash-table-ref state key))
+    (define (state-set! key value) (hash-table-set! state key value))
+
+    ;; Guards the chunk worker's job queue and results, and the dev command queue.
+    (define lock (make-mutex "chunk-queue"))
+    (define work-available (make-condition-variable "chunk-work"))
+
+    (for-each
+      (lambda (entry) (hash-table-set! state (car entry) (cadr entry)))
+      (list (list 'seed 0)
+            (list 'generation 0)
+            (list 'chunks (make-hash-table))
+            (list 'in-flight (make-hash-table))
+            (list 'job-queue '())
+            (list 'finished '())
+            (list 'dev-queue '())
+            (list 'mtimes (make-hash-table))
+            (list 'last-poll 0.0)
+            (list 'last-error "")
+            (list 'time-of-day 10.0)     ; hours, 0 <= t < 24
+            (list 'day-length 240.0)     ; real seconds per in-game day; 0 freezes
+            (list 'last-tick 0.0)
+            (list 'applied-time #f)      ; time the scene was last lit for
+            (list 'sun-dir #f)           ; direction the light travels            (list 'player #f)
+            (list 'sun #f)
+            (list 'world-root #f)
+            (list 'terrain-shader #f)
+            (list 'water-shader #f)))))

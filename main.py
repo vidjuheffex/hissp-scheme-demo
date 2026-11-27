@@ -25,6 +25,7 @@ SCHEME_ENTRYPOINT = SRC_DIR / "main.scm"
 
 # App libraries, in dependency order.
 APP_SCHEME_LIBRARIES = (
+    SRC_DIR / "world_state.sld",  # never hot-reloaded; keeps state across reloads
     SRC_DIR / "world_terrain.sld",
     SRC_DIR / "world_game.sld",
 )

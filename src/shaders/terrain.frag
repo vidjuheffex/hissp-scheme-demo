@@ -10,6 +10,7 @@ uniform struct {
 uniform sampler2D grass_tex;
 uniform sampler2D rock_tex;
 uniform vec4 fog_color;
+uniform vec3 ambient_color;   // scales the sky light: dark blue at night, white by day
 uniform float fog_end;
 uniform float sea_level;
 uniform float shadow_bias;
@@ -82,7 +83,8 @@ void main() {
 
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     float ndl = max(dot(normalize(view_normal), L), 0.0);
-    vec3 sky_ambient = mix(vec3(0.20, 0.19, 0.17), vec3(0.36, 0.42, 0.52), n.y * 0.5 + 0.5);
+    vec3 sky_ambient = mix(vec3(0.20, 0.19, 0.17), vec3(0.36, 0.42, 0.52), n.y * 0.5 + 0.5)
+                     * ambient_color;
     vec3 light = sky_ambient + p3d_LightSource[0].color * ndl * sun_shadow();
     vec3 color = albedo * light;
 

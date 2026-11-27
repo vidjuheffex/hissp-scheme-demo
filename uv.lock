@@ -24,7 +24,7 @@ wheels = [
 [[package]]
 name = "hissp-scheme"
 version = "0.1.0"
-source = { git = "https://github.com/vidjuheffex/hissp-scheme?branch=main#2841f2030401d6e837716b4839e883f3c9cfba4e" }
+source = { git = "https://github.com/vidjuheffex/hissp-scheme?branch=main#835a59f4a57e83ae399a1cd9cb1969ed0dbcb433" }
 dependencies = [
     { name = "hissp" },
 ]

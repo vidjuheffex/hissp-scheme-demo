@@ -19,7 +19,8 @@
   (import (scheme base)
           (scheme inexact)
           (scheme python)
-          (only random Random))
+          (only random Random)
+          (only (world state) state-set! state-ref))
   (begin
     ;; World units per chunk side, and grid cells per chunk side.
     (define CHUNK-SIZE 32)
@@ -35,10 +36,13 @@
 
     ;; World-space offset applied before sampling noise. Kept within +-50k so
     ;; the sine hash below stays precise at the highest octave.
+    ;; The seed is also kept in `(world state)`, so a reload of this library
+    ;; comes back up on the same world (see the last form below).
     (define SEED-X 0.0)
     (define SEED-Z 0.0)
 
     (define (set-world-seed! seed)
+      (state-set! 'seed seed)
       (let ((rng (Random seed)))
         (set! SEED-X (call-method rng 'uniform -50000.0 50000.0))
         (set! SEED-Z (call-method rng 'uniform -50000.0 50000.0))))
@@ -243,4 +247,5 @@
               TRIANGLES
               (and wet? (list WATER-VERTICES water-colors)))))
 
-    (set-world-seed! 0)))
+    ;; Runs on every load, including hot reloads: restores the current seed.
+    (set-world-seed! (state-ref 'seed))))
