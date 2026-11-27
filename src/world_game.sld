@@ -1427,6 +1427,11 @@
 
     ;; --- walking ---------------------------------------------------------
 
+    ;; The player's eyes above their feet in meters, and the camera's
+    ;; horizontal field of view in degrees.
+    (define EYE-HEIGHT 1.65)
+    (define FIELD-OF-VIEW 80)
+
     ;; Meters a second; Shift sprints.
     (define WALK-SPEED 5.0)
     (define SPRINT-SPEED 10.0)
@@ -1900,8 +1905,10 @@
         (let* ((player (call/kw FirstPersonController
                                 (position (make-tuple 0 (ground-height 0 0) 0)
                                  gravity 0
+                                 height EYE-HEIGHT
                                  speed WALK-SPEED)))
                (world (Entity)))
+          (attribute-set! camera 'fov FIELD-OF-VIEW)
           (state-set! 'player player)
           (attribute-set! world 'update (lambda () (frame-safely)))
           (attribute-set! world 'input (lambda (key) (handle-input key)))
