@@ -25,7 +25,7 @@
           (world terrain))
   (begin
     (define FIREFLY-COUNT 400)
-    (define BAT-COUNT 8)
+    (define BAT-COUNT 10)
     (define FLOCKS 3)
     (define BIRDS-PER-FLOCK 7)
 
@@ -85,10 +85,9 @@
                 (list 0 1 2  0 2 3)
                 0.0 (random) (random)))
         (do ((k 0 (+ k 1))) ((= k BAT-COUNT))
-          (let ((angle (* 6.283 (random)))
-                (out (* 22.0 (sqrt (random)))))
-            (add! (list (* out (cos angle)) (+ 4.0 (* 6.0 (random))) (* out (sin angle)))
-                  BAT-UVS WING-TRIANGLES 0.5 (random) (random))))
+          ;; Spots in the 50 m square the shader wraps them around in.
+          (add! (list (* 50.0 (random)) (+ 4.0 (* 6.0 (random))) (* 50.0 (random)))
+                BAT-UVS WING-TRIANGLES 0.5 (random) (random)))
         (do ((f 0 (+ f 1))) ((= f FLOCKS))
           (let ((flock (random)))
             (do ((k 0 (+ k 1))) ((= k BIRDS-PER-FLOCK))

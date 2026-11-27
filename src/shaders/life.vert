@@ -31,10 +31,14 @@ float ground_at(vec2 xz) {
     return texture(ground, (xz - ground_corner) / ground_size).r;
 }
 
-// A bat's flight, relative to the eye: wide loops around its anchor with
-// sudden jinks on top.
+// A bat's flight, relative to the eye: wide loops around a spot fixed in
+// the world, with sudden jinks on top. The spots wrap around a square
+// around the eye, like the fireflies.
+const float BAT_SQUARE = 50.0;
+
 vec3 bat_path(vec3 anchor, float r, float s, float t) {
-    return anchor
+    vec2 spot = mod(anchor.xz - eye.xz + 0.5 * BAT_SQUARE, BAT_SQUARE) - 0.5 * BAT_SQUARE;
+    return vec3(spot.x, anchor.y, spot.y)
          + vec3(6.0 * sin(t * 0.7 + r * 30.0), 1.2 * sin(t * 0.5 + s * 9.0), 6.0 * cos(t * 0.9 + s * 30.0))
          + vec3(1.3 * sin(t * 3.1 + r * 9.0), 0.8 * sin(t * 2.3 + s * 7.0), 1.3 * cos(t * 2.7 + s * 11.0));
 }
@@ -65,7 +69,7 @@ void main() {
         // Fireflies drift through the world and wrap around inside the
         // square as it follows the eye, hovering low over the ground and
         // flashing now and then.
-        vec2 world = p3d_Vertex.xz + eye.xz
+        vec2 world = p3d_Vertex.xz
                    + vec2(1.5 * sin(t * 0.30 + r * 40.0), 1.5 * cos(t * 0.27 + s * 40.0))
                    + 0.3 * vec2(sin(t * 1.7 + s * 13.0), cos(t * 1.3 + r * 17.0));
         vec2 local = mod(world - eye.xz + 0.5 * box, box) - 0.5 * box;
@@ -106,6 +110,8 @@ void main() {
         body = 0.35;
     }
     float show = step(bat ? s : fract(s * 13.7), bat ? bats : birds);
+    // Bats shrink away near the edge of their square rather than pop across.
+    if (bat) show *= 1.0 - smoothstep(0.38, 0.48, length(here.xz) / BAT_SQUARE);
     // Wing tips lift and drop with each beat, more than the middle.
     float lift = flap * span * abs(uv.x) * (abs(uv.x) > 0.75 ? 0.6 : 0.3);
     p = here + (forward * uv.y * body + side * uv.x * span + up * lift) * show;
