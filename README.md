@@ -8,7 +8,8 @@ uv run main.py        # new random world each run (seed is printed and in the ti
 uv run main.py 1234   # revisit a world by seed
 ```
 
-Controls: WASD to walk, mouse to look, Escape to toggle mouse lock.
+Controls: WASD to walk, mouse to look, Escape to toggle mouse lock. Your
+position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`
 (`uv lock --upgrade-package hissp-scheme` moves it to the latest `main`).
@@ -31,9 +32,12 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
-  (phase shading), the sky and clouds, rain and snow, and wildlife; `clouds.glsl` is
+  (phase shading), the sky and clouds, rain and snow, wildlife, and the
+  coordinates readout's text; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
+- `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
+  License in `OFL.txt`) for the coordinates readout
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
   `grass_clumps.png` and `moon.png`
   (`uv run --no-project --with pillow --with numpy tools/make_moon.py`)

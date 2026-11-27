@@ -46,7 +46,7 @@
     (world weather)
     (world life)
     (only ursina
-          DirectionalLight Entity Mesh Ursina application camera destroy mouse window)
+          DirectionalLight Entity Mesh Text Ursina application camera destroy mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
@@ -1082,6 +1082,54 @@
               (list -1 0 1)))
           (list -1 0 1))))
 
+    ;; --- coordinates readout ----------------------------------------------
+
+    ;; The player's position, top left, in Lexend Deca (assets/fonts): one
+    ;; line per axis so the labels don't shift as the numbers change width,
+    ;; over a dark copy offset down and right as a drop shadow.
+    (define HUD-MARGIN 0.025)
+    (define HUD-SHADOW 0.0022)
+
+    (define (make-hud!)
+      (attribute-set! application 'fonts_folder (Path (asset-path "assets" "fonts")))
+      (let ((corner (attribute-ref window 'top_left))
+            (shader (load-shader "hud")))
+        (call-method shader 'compile)
+        (let ((label
+                (lambda (offset z color)
+                  (call/kw Text
+                      (text " "
+                       font "LexendDeca.ttf"
+                       resolution 160
+                       line_height 1.15
+                       origin (make-tuple -0.5 0.5)
+                       position (make-tuple
+                                  (+ (attribute-ref corner 'x) HUD-MARGIN offset)
+                                  (- (attribute-ref corner 'y) HUD-MARGIN offset)
+                                  z)
+                       color color
+                       shader shader)))))
+          (let ((shadow (label HUD-SHADOW 0.01 (make-tuple 0.0 0.0 0.0 0.45)))
+                (text (label 0.0 0.0 (make-tuple 1.0 1.0 1.0 0.92))))
+            ;; Wider gaps between glyphs in the font's texture, or the edges
+            ;; of neighboring glyphs bleed in as slivers.
+            (let ((font (attribute-ref text 'font)))
+              (call-method font 'set-texture-margin 6)
+              (call-method font 'set-poly-margin 1.0)
+              (call-method font 'clear))
+            (state-set! 'hud (list shadow text #f))))))
+
+    ;; Only rebuilds the text when the rounded position changes.
+    (define (update-hud! player)
+      (let* ((hud (state-ref 'hud))
+             (meters (lambda (axis)
+                       (number->string (exact (round (attribute-ref player axis))))))
+             (shown (string-append "X  " (meters 'x) "\nY  " (meters 'y) "\nZ  " (meters 'z))))
+        (when (and hud (not (equal? shown (list-ref hud 2))))
+          (attribute-set! (car hud) 'text shown)
+          (attribute-set! (cadr hud) 'text shown)
+          (set-car! (cddr hud) shown))))
+
     (define (world-update)
       (keep-out-of-trunks! (state-ref 'player))
       (let* ((player (state-ref 'player))
@@ -1097,6 +1145,7 @@
         ;; Stick the player to the ground (gravity is off on the controller).
         (attribute-set! player 'y (ground-height x z))
         (follow-sun! x z)
+        (update-hud! player)
         (build-finished! pcx pcz)
         (request-missing! pcx pcz)
         (unload-far! pcx pcz)
@@ -1414,6 +1463,7 @@
         (make-moon!)
         (make-sky!)
         (make-life!)
+        (make-hud!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)
