@@ -36,6 +36,8 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   coordinates readout's text; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
+- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water), synthesized by
+  `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
@@ -130,6 +132,24 @@ storm. `life-amounts` in `src/world_life.sld` decides how many of each are
 out. They're one mesh that follows the camera, moved entirely in
 `life.vert`; fireflies hover over a coarse grid of ground heights around the
 player, sampled a few rows a frame as you move.
+
+## Sound
+
+Five seamless ambient loops play all the time, each faded (over a few
+seconds) toward a volume set by what's around you:
+
+- **Wind**: a low rush always, gusting and whistling as the wind picks up
+- **Rain**: hiss and patter with the rain (snow falls silently)
+- **Birds**: songbirds by day in dry weather, loudest at the dawn chorus,
+  most in grass and woods, few in the desert or snow
+- **Crickets**: on dry nights, except in the snow; quiet when it's windy
+- **Water**: waves lapping when there's water within about 55 m, louder
+  nearer and in the wind. The terrain is checked at points on three rings
+  around you, one point a frame.
+
+The loops are synthesized, not recorded: `tools/make_sounds.py` shapes noise
+and tones in numpy and writes Ogg Vorbis. `(sounds)` in the REPL shows the
+current volumes.
 
 ## Biomes
 

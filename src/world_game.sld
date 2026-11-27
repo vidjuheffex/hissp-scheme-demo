@@ -18,6 +18,7 @@
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
 ;;   (wildlife)                    how many fireflies, bats and birds are out (0 to 1)
+;;   (sounds)                      ambient loop volumes: wind rain birds crickets water
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
 ;;   (biome-here)                  biome weights under the player
@@ -46,7 +47,7 @@
     (world weather)
     (world life)
     (only ursina
-          DirectionalLight Entity Mesh Text Ursina application camera destroy mouse window)
+          Audio DirectionalLight Entity Mesh Text Ursina application camera destroy mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
@@ -666,6 +667,99 @@
         (map (lambda (a) (/ (round (* 100.0 a)) 100.0))
              (life-now (attribute-ref player 'x) (attribute-ref player 'z)))))
 
+    ;; --- ambient sound ----------------------------------------------------
+
+    ;; Looping ambience from assets/sounds (see tools/make_sounds.py), each
+    ;; faded toward a volume set by the wind, the rain, the hour, the biome
+    ;; and how near the water is.
+    (define SOUNDS (list "wind" "rain" "birds" "crickets" "water"))
+
+    ;; Seconds for a loop to get most of the way to a new volume.
+    (define SOUND-FADE 4.0)
+
+    ;; The water is listened for at points on rings around the player, one
+    ;; point a frame: this many directions at each of these distances.
+    (define WATER-DIRECTIONS 16)
+    (define WATER-RINGS (list 6.0 18.0 40.0))
+    ;; Water this far away or farther can't be heard.
+    (define WATER-EARSHOT 55.0)
+
+    (define (make-sounds!)
+      (state-set! 'sounds
+                  (list (map (lambda (name)
+                               (call/kw Audio
+                                        (sound_file_name (Path (asset-path "assets" "sounds"
+                                                                           (string-append name ".ogg")))
+                                         loop #t
+                                         autoplay #t
+                                         auto_destroy #f
+                                         group "ambient"
+                                         volume 0.0)))
+                             SOUNDS)
+                        (map (lambda (name) 0.0) SOUNDS)
+                        (make-vector (* WATER-DIRECTIONS (length WATER-RINGS)) 0.0)
+                        0)))
+
+    ;; How loud the water at ring point `k` around (x, z) is: louder nearer,
+    ;; nothing if the ground there is dry.
+    (define (water-heard x z k)
+      (let ((angle (/ (* 6.283185 (modulo k WATER-DIRECTIONS)) WATER-DIRECTIONS))
+            (r (list-ref WATER-RINGS (quotient k WATER-DIRECTIONS))))
+        (if (< (terrain-height (+ x (* r (cos angle))) (+ z (* r (sin angle)))) SEA-LEVEL)
+            (expt (- 1.0 (/ r WATER-EARSHOT)) 1.5)
+            0.0)))
+
+    ;; Target volumes, in `SOUNDS` order, at (x, z) with water `near` (0 to 1).
+    (define (sound-levels x z near)
+      (let* ((weather (state-ref 'weather))
+             (hours (state-ref 'time-of-day))
+             (height (sin (sun-angle hours)))
+             (precipitation (cadr weather))
+             (snow (list-ref weather 2))
+             (wind (state-ref 'wind))
+             (weights (biome-weights x z))
+             (desert (car weights))
+             (dry (cadr weights))
+             (snowy (list-ref weights 2))
+             (grass (max 0.0 (- 1.0 desert dry snowy)))
+             (dry-weather (- 1.0 (smooth-step 0.05 0.3 precipitation)))
+             (day (smooth-step -0.05 0.15 height))
+             (dark (- 1.0 (smooth-step -0.15 0.02 height)))
+             (morning (if (< hours 12.0) (- 1.0 (smooth-step 8.5 10.5 hours)) 0.0)))
+        (list (+ 0.06 (* 0.4 (clamp01 (/ wind 1.8))))
+              (* 0.8 precipitation (- 1.0 snow))
+              (* day dry-weather (+ grass (* 0.7 dry) (* 0.35 desert) (* 0.25 snowy))
+                 (+ 0.55 (* 0.45 morning))
+                 (- 1.0 (smooth-step 1.2 2.0 wind)))
+              (* 0.7 dark dry-weather (- 1.0 snow)
+                 (+ grass (* 0.8 dry) (* 0.5 desert))
+                 (- 1.0 (smooth-step 1.0 1.8 wind)))
+              (* 0.8 near (+ 0.35 (* 0.65 (clamp01 (/ wind 1.2))))))))
+
+    ;; Listens for water at one more ring point, and fades every loop
+    ;; toward its level over `dt` seconds.
+    (define (update-sounds! x z dt)
+      (let ((sounds (state-ref 'sounds)))
+        (when sounds
+          (let* ((heard (list-ref sounds 2))
+                 (k (list-ref sounds 3))
+                 (fade (- 1.0 (exp (/ (* -3.0 dt) SOUND-FADE))))
+                 (volumes (map (lambda (audio volume target)
+                                 (let ((v (+ volume (* (- target volume) fade))))
+                                   (attribute-set! audio 'volume v)
+                                   v))
+                               (car sounds)
+                               (cadr sounds)
+                               (sound-levels x z (apply max (vector->list heard))))))
+            (vector-set! heard k (water-heard x z k))
+            (state-set! 'sounds
+                        (list (car sounds) volumes heard
+                              (modulo (+ k 1) (vector-length heard))))))))
+
+    ;; REPL: `(sounds)` => volumes of (wind rain birds crickets water), 0 to 1.
+    (define (sounds)
+      (map (lambda (v) (/ (round (* 100.0 v)) 100.0)) (cadr (state-ref 'sounds))))
+
     (define (sky-position eye dir distance)
       (make-tuple (- (attribute-ref eye 'x) (* (car dir) distance))
                   (- (attribute-ref eye 'y) (* (cadr dir) distance))
@@ -1139,9 +1233,11 @@
              (pcz (world->chunk z)))
         (dev-drain!)
         (dev-poll!)
-        (update-weather! x z (advance-time!))
-        (apply-time!)
-        (update-life! x z)
+        (let ((dt (advance-time!)))
+          (update-weather! x z dt)
+          (apply-time!)
+          (update-life! x z)
+          (update-sounds! x z dt))
         ;; Stick the player to the ground (gravity is off on the controller).
         (attribute-set! player 'y (ground-height x z))
         (follow-sun! x z)
@@ -1464,6 +1560,7 @@
         (make-sky!)
         (make-life!)
         (make-hud!)
+        (make-sounds!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)
