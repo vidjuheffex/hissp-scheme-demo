@@ -23,10 +23,14 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
 - `src/world_plants.sld` — `(world plants)`: cactus, ocotillo and agave meshes
+- `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
-- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow),
-  water, grass clumps (wind, fade-out), desert plants and the moon (phase shading)
+- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow,
+  wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
+  shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants, the moon
+  (phase shading), the sky and clouds, and rain and snow; `clouds.glsl` is
+  the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
   `grass_clumps.png` and `moon.png`
@@ -37,7 +41,8 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 While the game runs, save a file and it reloads within about half a second:
 
-- `src/world_terrain.sld`, `src/world_plants.sld`, `src/world_game.sld`: the
+- `src/world_terrain.sld`, `src/world_plants.sld`, `src/world_weather.sld`,
+  `src/world_game.sld`: the
   libraries are re-evaluated in place. Terrain and plant edits also regenerate
   the chunks.
 - `src/shaders/*`: shaders are recompiled and applied to the existing terrain.
@@ -52,6 +57,8 @@ Type Scheme into the terminal that started the game, one form per line:
 (set-day-length! 0)        ; freeze the clock (60 = a day per minute)
 (moon-phase)               ; day count, phase name, lit fraction
 (set-day! 15)              ; jump the moon's cycle (0 new, 7 first quarter, 15 full)
+(weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover
+(set-weather! 1.0)         ; force the cloud cover: 1 storm, 0 clear; #f to let it run
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
 (go-to! 500 -200)          ; move the player
@@ -71,6 +78,28 @@ is the moon, so full moons give soft blue shadows. The moonlight, night sky
 and ambient colours (`MOON-COLOR`, `MOON-BRIGHTNESS`, `SKY-MOONLIT`,
 `AMBIENT-NEW-MOON`, `AMBIENT-FULL-MOON`) are at the top of
 `src/world_game.sld`.
+
+## Weather
+
+Cloud cover drifts between clear and overcast over game time, about twice a
+day (a couple of minutes of play), different in every world. Deserts get half
+the cloud and little rain. When cover is heavy it rains, or snows in the snowy
+biome and above 30 m. Clouds cast shadows that drift across the land (by
+moonlight too), so overcast is shade everywhere; it also greys the sky, and
+rain and snow pull the fog in. Rain rings ripple the water and darken the
+ground, which dries over a minute or two; fresh
+snow settles on flat ground and brings the snow line down the mountains, then
+melts over a few minutes.
+
+The sky is two domes around the camera: `sky.frag` (gradient and sun glow)
+behind the sun and moon, and `clouds.frag` (noise on a layer at 520 m,
+drifting with the wind) over them. The layer itself is in
+`src/shaders/clouds.glsl`, which the ground, grass, plant and water shaders
+also include: each looks up toward the sun through the same noise to shade
+itself. Rain and snow are 12,000 quads in a box
+that follows the camera, moved entirely in `precip.vert`. The weather model
+and its rates are in `src/world_weather.sld`; how weather changes the light is
+in `scene-at` in `src/world_game.sld`.
 
 ## Biomes
 

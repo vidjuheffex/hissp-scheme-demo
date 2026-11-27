@@ -558,8 +558,12 @@
     ;; (x y z x y z ...), which Ursina's Mesh takes as-is. Returns
     ;;   (terrain-vertices terrain-normals triangles water terrain-colors)
     ;; where `water` is #f for dry chunks, or (water-vertices water-colors).
-    ;; Water colors carry the depth below the surface (red = depth / 10),
-    ;; which the water shader uses for shallow tint, transparency, and foam.
+    ;; Water colors carry the depth below the surface (red = depth / 10), or
+    ;; for ground above it the height (green = height / 10), so the shader
+    ;; finds where the shoreline crosses each triangle. It uses depth for the
+    ;; shallow tint, transparency, foam and the fade at the water's edge.
+    ;; Blue carries the slope of the ground (rise over run / 2), from which
+    ;; it estimates how far the shore is.
     ;; Terrain colors carry the biome weights: red desert, green dry
     ;; grassland, blue snowy (grassland is the rest).
     ;; The optional `pause` thunk is called periodically during generation.
@@ -625,9 +629,13 @@
                 (vector-set! normals v (* (- dhx) inv-len))
                 (vector-set! normals (+ v 1) inv-len)
                 (vector-set! normals (+ v 2) (* (- dhz) inv-len))
-                (when (> depth 0.0)
-                  (set! wet? #t)
-                  (vector-set! water-colors c (min 1.0 (* depth 0.1))))
+                (if (> depth 0.0)
+                    (begin
+                      (set! wet? #t)
+                      (vector-set! water-colors c (min 1.0 (* depth 0.1))))
+                    (vector-set! water-colors (+ c 1) (min 1.0 (* depth -0.1))))
+                (vector-set! water-colors (+ c 2)
+                             (min 1.0 (* 0.5 (sqrt (+ (* dhx dhx) (* dhz dhz))))))
                 (vector-set! water-colors (+ c 3) 1.0)))
             (pause)))
         (list vertices

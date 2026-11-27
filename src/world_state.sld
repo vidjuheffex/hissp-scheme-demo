@@ -44,6 +44,11 @@
             (list 'moon-dir #f)          ; direction moonlight travels
             (list 'light-dir #f)         ; the shadow light: sun by day, moon at night
             (list 'moon #f)              ; moon disc entity
+            (list 'sky #f)               ; (sky clouds precipitation) entities
+            ;; (cover precipitation snow wetness snow-cover), see (world weather)
+            (list 'weather (list 0.0 0.0 0.0 0.0 0.0))
+            (list 'weather-override #f)  ; cloud cover forced from the REPL
+            (list 'cloud-drift (list 0.0 0.0))  ; meters the clouds have moved
             (list 'repl-busy #f)         ; a REPL line is waiting to be evaluated
             (list 'player #f)
             (list 'sun #f)

@@ -14,10 +14,14 @@ uniform vec4 fog_color;
 uniform vec3 ambient_color;
 uniform float fog_end;
 uniform float shadow_bias;
+uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
+
+#include "clouds.glsl"
 
 in vec2 uv;
 in vec3 tint;
 in vec3 view_pos;
+in vec3 world_pos;
 in vec4 shadow_coord;
 
 out vec4 frag_color;
@@ -48,7 +52,8 @@ void main() {
     vec3 sky_ambient = vec3(0.34, 0.39, 0.46) * ambient_color;
     // Darker toward the base, where blades shade each other.
     float occlusion = mix(0.7, 1.05, uv.y);
-    vec3 light = (sky_ambient + p3d_LightSource[0].color * ndl * sun_shadow()) * occlusion;
+    vec3 light = (sky_ambient + p3d_LightSource[0].color * ndl * sun_shadow()
+                  * cloud_shadow(world_pos, to_light)) * occlusion;
     vec3 color = texel.rgb * tint * light;
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));

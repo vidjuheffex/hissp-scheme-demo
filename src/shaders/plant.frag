@@ -11,6 +11,9 @@ uniform vec4 fog_color;
 uniform vec3 ambient_color;
 uniform float fog_end;
 uniform float shadow_bias;
+uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
+
+#include "clouds.glsl"
 
 in vec3 albedo;
 in vec2 plant;   // x: material (whole part) + across an agave leaf; y: height above base
@@ -121,7 +124,7 @@ void main() {
     vec3 N = normalize(view_normal) * side;
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     vec3 V = normalize(-view_pos);
-    float shadow = sun_shadow();
+    float shadow = sun_shadow() * cloud_shadow(world_pos, to_light);
     // A little wrap so the shaded side of a cactus isn't flat black.
     float ndl = clamp(dot(N, L) * 0.85 + 0.15, 0.0, 1.0);
     // Darker near the ground, where the plant shades itself and the soil.

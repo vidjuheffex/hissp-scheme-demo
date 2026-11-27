@@ -16,6 +16,8 @@
 ;;   (set-day-length! 0)           freeze the clock (60 = a day per minute)
 ;;   (moon-phase)                  day count, phase name, lit fraction
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
+;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
+;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (biome-here)                  biome weights under the player
 ;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
 ;;   (go-to! 500 -200)             move the player
@@ -38,6 +40,7 @@
     (world state)
     (world terrain)
     (world plants)
+    (world weather)
     (only ursina
           DirectionalLight Entity Mesh Ursina application camera destroy mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
@@ -113,13 +116,27 @@
         (call-method texture 'set-wrap-v clamp)
         texture))
 
-    (define (read-shader-source file)
-      (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
+    ;; Files that shaders share with `#include "name"`; GLSL has no includes
+    ;; of its own, so the line is replaced by the file's text.
+    (define SHADER-INCLUDES (list "clouds.glsl"))
 
-    (define (load-shader name)
+    (define (read-shader-source file)
+      (let loop ((source (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
+                 (names SHADER-INCLUDES))
+        (if (null? names)
+            source
+            (let ((line (string-append "#include \"" (car names) "\"")))
+              (loop (if (>= (call-method source 'find line) 0)
+                        (call-method source 'replace line (read-shader-source (car names)))
+                        source)
+                    (cdr names))))))
+
+    ;; `vertex` names another shader whose vertex stage this one shares.
+    (define (load-shader name . vertex)
       (call/kw Shader
                (name name
-                vertex (read-shader-source (string-append name ".vert"))
+                vertex (read-shader-source
+                         (string-append (if (pair? vertex) (car vertex) name) ".vert"))
                 fragment (read-shader-source (string-append name ".frag")))))
 
     (define (world->chunk v)
@@ -202,7 +219,8 @@
                                                    colors (cadr water)
                                                    triangles triangles))
                                    shader (state-ref 'water-shader)))))
-            (call-method surface 'set-transparency #t)
+            ;; On the model, where Ursina's own setting would override it.
+            (call-method (attribute-ref surface 'model) 'set-transparency #t)
             ;; Mask 1 is the shadow camera; water shouldn't shade the seabed.
             (call-method surface 'hide 1)))
         (let ((plants (list-ref data 5)))
@@ -524,6 +542,37 @@
         (call-method moon 'hide 1)
         (state-set! 'moon moon)))
 
+    ;; The sky is two domes around the camera: the colors of the sky first,
+    ;; then the sun and moon, then the clouds over them, all drawn before the
+    ;; terrain and without depth so the terrain covers them. Rain and snow
+    ;; fill a box that follows the camera. Kept in state as
+    ;; (sky clouds precipitation).
+    (define (make-sky!)
+      (let* ((sky (call/kw Entity (model "sphere" scale 1900 double_sided #t
+                                   shader (load-shader "sky"))))
+             (clouds (call/kw Entity (model "sphere" scale 1900 double_sided #t
+                                      shader (load-shader "clouds" "sky"))))
+             (data (precipitation-mesh))
+             (mesh (call/kw Mesh (vertices (car data)
+                                  uvs (cadr data)
+                                  colors (list-ref data 2)
+                                  triangles (list-ref data 3))))
+             (precipitation (call/kw Entity (model mesh double_sided #t enabled #f
+                                             shader (load-shader "precip")))))
+        (for-each (lambda (entity order)
+                    (call-method entity 'set-bin "background" order)
+                    (call-method entity 'set-depth-write #f)
+                    (call-method entity 'hide 1))
+                  (list sky (list-ref (state-ref 'sun) 2) (state-ref 'moon) clouds)
+                  (list 0 1 2 3))
+        (call-method (attribute-ref clouds 'model) 'set-transparency #t)
+        (call-method mesh 'set-transparency #t)
+        (call-method precipitation 'set-depth-write #f)
+        (call-method precipitation 'hide 1)
+        (call-method precipitation 'set-shader-input "box" (rgb PRECIP-BOX))
+        (call-method precipitation 'set-shader-input "wind" (rgb WIND))
+        (state-set! 'sky (list sky clouds precipitation))))
+
     (define (sky-position eye dir distance)
       (make-tuple (- (attribute-ref eye 'x) (* (car dir) distance))
                   (- (attribute-ref eye 'y) (* (cadr dir) distance))
@@ -551,7 +600,12 @@
             (attribute-set! moon 'position
                             (sky-position eye (state-ref 'moon-dir) MOON-DISTANCE))
             ;; Keeps the same face (its +z side) toward the player.
-            (call-method moon 'look-at eye)))))
+            (call-method moon 'look-at eye)))
+        (let ((sky (state-ref 'sky)))
+          (when sky
+            (for-each (lambda (entity) (attribute-set! entity 'position eye)) sky)
+            (call-method (cadr sky) 'set-shader-input "eye" eye)
+            (call-method (list-ref sky 2) 'set-shader-input "eye" eye)))))
 
     ;; --- time of day -----------------------------------------------------
 
@@ -601,18 +655,25 @@
     (define (illumination phase)
       (* 0.5 (- 1.0 (cos (* 2.0 PI phase)))))
 
-    ;; What the sky looks like at `hours` with the moon at `phase`. Returns
+    ;; What the sky looks like at `hours` with the moon at `phase`, under
+    ;; `cover` cloud (0 clear to 1 overcast) with `precipitation` (0 to 1)
+    ;; falling. Returns
     ;;   (light-direction light-color sky-color ambient-color
-    ;;    sun-direction moon-direction glare)
+    ;;    sun-direction moon-direction glare sun-glow overcast
+    ;;    cloud-light-direction cloud-light-color)
     ;; `glare` (0 to 1) is how much daylight washes out the moon: most with
-    ;; the sun high, less near sunrise and sunset, none at night.
+    ;; the sun high, less near sunrise and sunset, none at night. Overcast
+    ;; turns the sky grey and hides the sun's glow; rain darkens it more. It
+    ;; doesn't dim the light itself: shaders shade what's under a cloud.
+    ;; Clouds are lit by the light above them, and being high up they keep the
+    ;; sunset's light a while after it has left the ground.
     ;; Directions are the way the light travels (the body sits the opposite
     ;; way). The moon trails the sun around the sky by its phase, as the real
     ;; one does: a full moon is opposite the sun and up all night, a new moon
     ;; is up with the sun and leaves the night dark. Once the sun is far
     ;; enough down that sunlight has faded out, the shadow light becomes the
     ;; moon, so the switch doesn't show.
-    (define (scene-at hours phase)
+    (define (scene-at hours phase cover precipitation)
       (let* ((a (sun-angle hours))
              (height (sin a))                       ; -1 midnight, 1 noon
              (day (smooth-step -0.08 0.12 height))  ; 0 at night, 1 in daylight
@@ -622,13 +683,24 @@
              (moonlight (* (illumination phase) (smooth-step 0.0 0.15 (sin moon-a))))
              ;; Warm band around the horizon at dawn and dusk.
              (twilight (- 1.0 (smooth-step 0.0 0.3 (abs height))))
-             (sun-color (scale-list (lerp-list SUN-WARM SUN-COLOR high) day))
+             (overcast (smooth-step 0.3 1.0 cover))
+             (dim (- 1.0 (* 0.75 overcast)))
+             (sun-tint (lerp-list SUN-WARM SUN-COLOR high))
+             (sun-color (scale-list sun-tint day))
              (moon-color (scale-list MOON-COLOR (* MOON-BRIGHTNESS moonlight night)))
-             (night-sky (lerp-list SKY-NIGHT SKY-MOONLIT moonlight))
-             (sky (lerp-list (lerp-list night-sky SKY-DAY day) SKY-DUSK twilight))
-             (ambient (lerp-list (lerp-list AMBIENT-NEW-MOON AMBIENT-FULL-MOON moonlight)
-                                 (list 1.0 1.0 1.0)
-                                 day))
+             (sun-on-clouds? (> height -0.2))
+             (night-sky (lerp-list SKY-NIGHT SKY-MOONLIT (* moonlight dim)))
+             (clear-sky (lerp-list (lerp-list night-sky SKY-DAY day) SKY-DUSK twilight))
+             (grey (* 0.8 (+ (* 0.3 (car clear-sky)) (* 0.59 (cadr clear-sky))
+                             (* 0.11 (list-ref clear-sky 2)))))
+             (sky (scale-list (lerp-list clear-sky (list grey grey (* 1.06 grey))
+                                         (* 0.85 overcast))
+                              (- 1.0 (* 0.35 precipitation))))
+             (ambient (scale-list
+                        (lerp-list (lerp-list AMBIENT-NEW-MOON AMBIENT-FULL-MOON moonlight)
+                                   (list 1.0 1.0 1.0)
+                                   day)
+                        (- 1.0 (* 0.2 overcast))))
              (sun-dir (path-direction a SUN-TILT))
              ;; The moon's tilt flips over the month, so that it's exactly
              ;; opposite the sun when full and 90 degrees off at the quarters.
@@ -640,21 +712,32 @@
               ambient
               sun-dir
               moon-dir
-              (* day (+ 0.4 (* 0.6 (smooth-step 0.0 0.8 height)))))))
+              (* day (+ 0.4 (* 0.6 (smooth-step 0.0 0.8 height))))
+              (scale-list sun-color dim)
+              overcast
+              (if sun-on-clouds? sun-dir moon-dir)
+              (if sun-on-clouds?
+                  (scale-list sun-tint (smooth-step -0.2 0.05 height))
+                  moon-color))))
 
     (define (current-phase)
       (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
 
-    ;; Light the scene for the current hour. Only does work when the hour has
-    ;; changed since the last call.
+    ;; Light the scene for the current hour and weather. Only does work when
+    ;; either has changed since the last call.
     (define (apply-time!)
-      (let ((hours (state-ref 'time-of-day)))
-        (unless (equal? hours (state-ref 'applied-time))
-          (state-set! 'applied-time hours)
-          (let* ((scene (scene-at hours (current-phase)))
+      (let* ((hours (state-ref 'time-of-day))
+             (weather (state-ref 'weather))
+             (cover (car weather))
+             (precipitation (cadr weather))
+             (key (list hours (round (* 200.0 cover)) (round (* 200.0 precipitation)))))
+        (unless (equal? key (state-ref 'applied-time))
+          (state-set! 'applied-time key)
+          (let* ((scene (scene-at hours (current-phase) cover precipitation))
                  (sky (list-ref scene 2))
                  (sun-dir (list-ref scene 4))
-                 (moon (state-ref 'moon)))
+                 (moon (state-ref 'moon))
+                 (domes (state-ref 'sky)))
             (state-set! 'light-dir (car scene))
             (state-set! 'sun-dir sun-dir)
             (state-set! 'moon-dir (list-ref scene 5))
@@ -664,12 +747,42 @@
             (when moon
               (call-method moon 'set-shader-input "to_sun" (rgb (scale-list sun-dir -1.0)))
               (call-method moon 'set-shader-input "glare" (list-ref scene 6)))
+            (when domes
+              (let ((sky-dome (car domes))
+                    (clouds (cadr domes))
+                    (cloud-light (rgb (list-ref scene 10)))
+                    (ambient (rgb (list-ref scene 3))))
+                (for-each (lambda (input)
+                            (call-method sky-dome 'set-shader-input (car input) (cadr input)))
+                          (list (list "sky_color" (rgb sky))
+                                (list "to_sun" (rgb (scale-list sun-dir -1.0)))
+                                (list "sun_color" (rgb (list-ref scene 7)))
+                                (list "overcast" (list-ref scene 8))))
+                (for-each (lambda (input)
+                            (call-method clouds 'set-shader-input (car input) (cadr input)))
+                          (list (list "sky_color" (rgb sky))
+                                (list "to_light" (rgb (scale-list (list-ref scene 9) -1.0)))
+                                (list "light_color" cloud-light)
+                                (list "ambient_color" ambient)
+                                (list "cover" cover)
+                                (list "precipitation" precipitation)))
+                ;; Rain and snow are lit by what gets through the cloud.
+                (call-method (list-ref domes 2) 'set-shader-input "light_color"
+                             (rgb (scale-list (list-ref scene 1) (- 1.0 (* 0.75 cover)))))
+                (call-method (list-ref domes 2) 'set-shader-input "ambient_color" ambient)))
             (attribute-set! window 'color (rgba sky))
             (set-input! "fog_color" (rgba sky))
+            (set-input! "fog_end" (* FOG-END (- 1.0 (* 0.5 precipitation))))
+            (set-input! "to_light" (rgb (scale-list (car scene) -1.0)))
+            (set-input! "cover" cover)
+            ;; For the sky and clouds the water reflects.
+            (set-input! "overcast" (list-ref scene 8))
+            (set-input! "precipitation" precipitation)
+            (set-input! "cloud_light_color" (rgb (list-ref scene 10)))
             (set-input! "ambient_color" (rgb (list-ref scene 3)))))))
 
     ;; Advance the clock by the real time since the last tick, counting days
-    ;; at midnight.
+    ;; at midnight. Returns the seconds since the last tick.
     (define (advance-time!)
       (let* ((t (now))
              (dt (min 0.25 (- t (state-ref 'last-tick))))
@@ -679,7 +792,8 @@
           (let ((hours (+ (state-ref 'time-of-day) (* dt (/ 24.0 day-seconds)))))
             (when (>= hours 24.0)
               (state-set! 'day (+ (state-ref 'day) 1)))
-            (state-set! 'time-of-day (wrap-hours hours))))))
+            (state-set! 'time-of-day (wrap-hours hours))))
+        dt))
 
     ;; REPL: `(set-time-of-day! 18.5)` for 6:30pm. The clock keeps running
     ;; unless the day length is 0.
@@ -709,6 +823,63 @@
     ;; runs a day in a minute.
     (define (set-day-length! seconds)
       (state-set! 'day-length seconds))
+
+    ;; --- weather ---------------------------------------------------------
+
+    ;; Meters per second the wind carries the clouds.
+    (define CLOUD-SPEED 8.0)
+
+    (define (weather-days)
+      (+ (state-ref 'day) (/ (state-ref 'time-of-day) 24.0)))
+
+    ;; Move the weather on `dt` seconds toward what it should be where the
+    ;; player stands, and hand it to the shaders.
+    (define (update-weather! x z dt)
+      (let* ((target (weather-target (weather-days) x z
+                                     (attribute-ref (state-ref 'player) 'y)
+                                     (state-ref 'weather-override)))
+             (now-weather (weather-step (state-ref 'weather) target dt))
+             (drift (map (lambda (d w) (+ d (* w CLOUD-SPEED dt)))
+                         (state-ref 'cloud-drift) WIND))
+             (sky (state-ref 'sky)))
+        (state-set! 'weather now-weather)
+        (state-set! 'cloud-drift drift)
+        (set-input! "wetness" (list-ref now-weather 3))
+        (set-input! "rain" (* (cadr now-weather) (- 1.0 (list-ref now-weather 2))))
+        (set-input! "drift" (apply make-tuple drift))
+        (set-input! "snow_cover" (list-ref now-weather 4))
+        (when sky
+          (call-method (cadr sky) 'set-shader-input "drift" (apply make-tuple drift))
+          (let ((precipitation (list-ref sky 2))
+                (amount (cadr now-weather)))
+            (attribute-set! precipitation 'enabled (> amount 0.01))
+            (call-method precipitation 'set-shader-input "intensity" amount)
+            (call-method precipitation 'set-shader-input "snow" (list-ref now-weather 2))))))
+
+    ;; Start on the weather that belongs at (x, z), rather than clearing up
+    ;; or clouding over during the first seconds.
+    (define (settle-weather! x z)
+      (state-set! 'weather
+                  (append (weather-target (weather-days) x z (ground-height x z)
+                                          (state-ref 'weather-override))
+                          (list 0.0 0.0))))
+
+    ;; REPL: `(weather)` => (cover precipitation kind wetness snow-cover),
+    ;; e.g. (0.82 0.4 "rain" 0.6 0.0).
+    (define (weather)
+      (let ((w (state-ref 'weather))
+            (round2 (lambda (x) (/ (round (* 100.0 x)) 100.0))))
+        (list (round2 (car w))
+              (round2 (cadr w))
+              (if (> (list-ref w 2) 0.5) "snow" "rain")
+              (round2 (list-ref w 3))
+              (round2 (list-ref w 4)))))
+
+    ;; REPL: `(set-weather! 1.0)` brings a storm wherever you are,
+    ;; `(set-weather! 0)` clears the sky, `(set-weather! #f)` lets the
+    ;; weather run by itself again.
+    (define (set-weather! cover)
+      (state-set! 'weather-override cover))
 
     ;; --- biomes (REPL helpers) -------------------------------------------
 
@@ -768,7 +939,7 @@
              (pcz (world->chunk z)))
         (dev-drain!)
         (dev-poll!)
-        (advance-time!)
+        (update-weather! x z (advance-time!))
         (apply-time!)
         ;; Stick the player to the ground (gravity is off on the controller).
         (attribute-set! player 'y (ground-height x z))
@@ -798,8 +969,7 @@
     (define (apply-scene!)
       (for-each
         (lambda (input) (set-input! (car input) (cadr input)))
-        (list (list "fog_end" FOG-END)
-              (list "sea_level" SEA-LEVEL)
+        (list (list "sea_level" SEA-LEVEL)
               (list "shadow_bias" SHADOW-BIAS)
               (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))))
       (state-set! 'applied-time #f)
@@ -828,6 +998,11 @@
       (state-set! 'plant-shader (load-shader "plant"))
       (when (state-ref 'moon)
         (attribute-set! (state-ref 'moon) 'shader (load-shader "moon")))
+      (let ((sky (state-ref 'sky)))
+        (when sky
+          (attribute-set! (car sky) 'shader (load-shader "sky"))
+          (attribute-set! (cadr sky) 'shader (load-shader "clouds" "sky"))
+          (attribute-set! (list-ref sky 2) 'shader (load-shader "precip"))))
       (hash-table-walk (state-ref 'chunks)
                        (lambda (key terrain) (apply-shaders! terrain))))
 
@@ -865,9 +1040,12 @@
             "shaders/water.vert" "shaders/water.frag"
             "shaders/grass.vert" "shaders/grass.frag"
             "shaders/plant.vert" "shaders/plant.frag"
-            "shaders/moon.vert" "shaders/moon.frag"))
+            "shaders/moon.vert" "shaders/moon.frag"
+            "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl"
+            "shaders/precip.vert" "shaders/precip.frag"))
     (define WATCHED-FILES
-      (append (list "world_terrain.sld" "world_plants.sld" "world_game.sld") SHADER-FILES))
+      (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_game.sld")
+              SHADER-FILES))
 
     (define (file-mtime name)
       (guard (e (else #f))
@@ -902,16 +1080,18 @@
                (any-member? (cdr names) items))))
 
     ;; Libraries copy their imports' exports when imported, so after the
-    ;; terrain changes the plants and the scene have to reload too. Reloading the scene
+    ;; terrain changes the plants, the weather and the scene have to reload too. Reloading the scene
     ;; replaces these very functions, so the calls below go to the new code.
     (define (reload-changed! changed)
       (let* ((terrain? (member "world_terrain.sld" changed))
              (plants? (or terrain? (member "world_plants.sld" changed)))
+             (weather? (or terrain? (member "world_weather.sld" changed)))
              (scene? (member "world_game.sld" changed))
              (shaders? (any-member? SHADER-FILES changed)))
-        (when (or plants? scene?)
+        (when (or plants? weather? scene?)
           (when terrain? (reload-library! "world_terrain.sld"))
           (when plants? (reload-library! "world_plants.sld"))
+          (when weather? (reload-library! "world_weather.sld"))
           (reload-library! "world_game.sld")
           (apply-scene!)
           (when plants? (regenerate!)))
@@ -1073,6 +1253,8 @@
         (set-input! "clump_tex" (load-sprite-texture "grass_clumps.png"))
         (make-sun!)
         (make-moon!)
+        (make-sky!)
+        (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)
 

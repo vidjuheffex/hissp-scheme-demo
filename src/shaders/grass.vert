@@ -23,6 +23,7 @@ in vec4 p3d_Color;         // per-clump tint
 out vec2 uv;
 out vec3 tint;
 out vec3 view_pos;
+out vec3 world_pos;
 out vec4 shadow_coord;
 
 void main() {
@@ -44,6 +45,7 @@ void main() {
     vec4 vp = p3d_ModelViewMatrix * v;
     gl_Position = p3d_ProjectionMatrix * vp;
     view_pos = vp.xyz;
+    world_pos = (p3d_ModelMatrix * v).xyz;
     shadow_coord = p3d_LightSource[0].shadowViewMatrix * vp;
     uv = p3d_MultiTexCoord0;
     tint = p3d_Color.rgb;

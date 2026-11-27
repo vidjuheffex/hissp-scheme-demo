@@ -28,6 +28,7 @@ APP_SCHEME_LIBRARIES = (
     SRC_DIR / "world_state.sld",  # never hot-reloaded; keeps state across reloads
     SRC_DIR / "world_terrain.sld",
     SRC_DIR / "world_plants.sld",
+    SRC_DIR / "world_weather.sld",
     SRC_DIR / "world_game.sld",
 )
 

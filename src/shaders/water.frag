@@ -7,32 +7,114 @@ uniform struct {
     mat4 shadowViewMatrix;
 } p3d_LightSource[1];
 
-uniform mat3 p3d_NormalMatrix;
+uniform mat4 p3d_ViewMatrixInverse;
 uniform float osg_FrameTime;
-uniform vec4 fog_color;
+uniform vec4 fog_color;          // also the sky at the horizon
+uniform vec3 ambient_color;
 uniform float fog_end;
 uniform float shadow_bias;
+uniform float rain;              // 0 dry to 1 a downpour
+uniform float overcast;          // greys the sky gradient
+uniform float precipitation;     // darkens the clouds
+uniform vec3 cloud_light_color;  // sun or moon light on the clouds
+uniform vec3 to_light;           // world direction toward the shadow light (sun or moon)
+
+#include "clouds.glsl"
 
 in vec3 world_pos;
 in vec3 view_pos;
-in float depth;
+in float depth;   // negative over dry ground
+in float ground_slope;
 in vec4 shadow_coord;
 
 out vec4 frag_color;
 
-// Slope (dh/dx, dh/dz) of a sum of travelling sine waves.
-vec2 wave_slope(vec2 p, float t) {
-    vec2 s = vec2(0.0);
-    vec2 dirs[6] = vec2[](vec2(1.0, 0.3), vec2(-0.4, 1.0), vec2(0.7, -0.8),
-                          vec2(-1.0, -0.2), vec2(0.2, 0.9), vec2(0.9, -0.4));
-    float freqs[6] = float[](0.4, 0.7, 1.3, 2.3, 3.9, 6.1);
-    float amps[6] = float[](0.06, 0.035, 0.02, 0.011, 0.006, 0.0035);
-    for (int i = 0; i < 6; ++i) {
-        vec2 d = normalize(dirs[i]);
-        float phase = dot(d, p) * freqs[i] + t * sqrt(freqs[i]) * 1.6;
-        s += d * cos(phase) * freqs[i] * amps[i];
+// Value noise with its gradient: (value, d/dx, d/dy).
+vec3 noise_grad(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    vec2 du = 6.0 * f * (1.0 - f);
+    float a = cloud_hash(i);
+    float b = cloud_hash(i + vec2(1.0, 0.0));
+    float c = cloud_hash(i + vec2(0.0, 1.0));
+    float d = cloud_hash(i + vec2(1.0, 1.0));
+    float k = a - b - c + d;
+    return vec3(a + (b - a) * u.x + (c - a) * u.y + k * u.x * u.y,
+                du * (vec2(b - a, c - a) + k * u.yx));
+}
+
+// Slope (dh/dx, dh/dz) of the surface: a long swell under wind chop, the
+// chop in two layers drifting different ways so it never repeats. `detail`
+// (0 to 1) fades the finest chop, which far off would only shimmer.
+vec2 wave_slope(vec2 p, float t, float detail) {
+    vec2 d1 = normalize(vec2(1.0, 0.3));
+    vec2 d2 = normalize(vec2(-0.4, 1.0));
+    vec2 s = d1 * cos(dot(d1, p) * 0.35 + t * 0.95) * 0.018
+           + d2 * cos(dot(d2, p) * 0.6 + t * 1.25) * 0.018;
+    mat2 turn = mat2(0.8, -0.6, 0.6, 0.8);
+    for (int layer = 0; layer < 2; ++layer) {
+        vec2 flow = layer == 0 ? vec2(0.55, 0.2) : vec2(-0.25, 0.45);
+        mat2 m = layer == 0 ? mat2(1.0) : mat2(0.6, 0.8, -0.8, 0.6);
+        float freq = 0.8;
+        float amp = 0.03;
+        for (int i = 0; i < 4; ++i) {
+            vec2 q = m * p * freq + flow * t * (1.0 + 0.3 * float(i)) + float(i * 7 + layer * 3);
+            vec2 g = noise_grad(q).yz;
+            s += amp * freq * (g * m) * (i < 2 ? 1.0 : detail);
+            m = turn * m;
+            freq *= 2.1;
+            amp *= 0.5;
+        }
     }
     return s;
+}
+
+// Slope of rings spreading from raindrops. Each cell of a grid gets a drop
+// at a random spot and moment, of random size; light rain leaves most cells
+// calm. Four offset grids of different sizes keep it from looking regular.
+vec2 ripple_slope(vec2 p, float t) {
+    vec2 s = vec2(0.0);
+    for (int layer = 0; layer < 4; ++layer) {
+        float k = float(layer);
+        vec2 q = p * (1.1 + 0.37 * k) + vec2(k * 0.37, k * 0.71);
+        vec2 cell = floor(q) + k * 31.7;
+        float h = cloud_hash(cell);
+        if (h > rain) continue;
+        float size = 0.25 + 0.2 * cloud_hash(cell + 5.3);
+        vec2 center = vec2(cloud_hash(cell + 3.7), cloud_hash(cell + 9.1)) * 0.4 - 0.2;
+        float age = fract(t * (0.7 + 0.3 * h) + h * 7.0 + k * 0.29);
+        vec2 off = fract(q) - 0.5 - center;
+        float r = length(off);
+        // A short train of crests that widens and dies away as it spreads.
+        float front = r - age * size;
+        float width = 0.03 + 0.05 * age;
+        float ring = sin(front / width * 2.5) * exp(-front * front / (width * width));
+        float fade = (1.0 - age) * (1.0 - age) * smoothstep(0.5, 0.35, r);
+        s += off / max(r, 1e-3) * ring * fade * 0.55;
+    }
+    return s;
+}
+
+// The sky seen along world direction `d` from point `p`: the same gradient
+// as sky.frag and the same clouds as clouds.frag, simplified.
+vec3 sky_toward(vec3 d, vec3 p) {
+    vec3 horizon = fog_color.rgb;
+    vec3 zenith = horizon * vec3(0.62, 0.78, 1.0);
+    vec3 color = mix(horizon, mix(zenith, horizon, overcast), smoothstep(0.0, 0.6, d.y));
+    if (d.y > 0.02) {
+        float t = (CLOUD_ALTITUDE - p.y) / d.y;
+        float n = cloud_field(p.xz + d.xz * t, 4);
+        float density = cloud_density(n) * smoothstep(0.02, 0.1, d.y);
+        float edge = cloud_edge();
+        float grey = mix(1.0, 0.75, smoothstep(edge, edge + 0.5, n))
+                   * mix(1.0, 0.75, cover * cover) * mix(1.0, 0.5, precipitation);
+        vec3 cloud = grey * (ambient_color * ambient_color * 0.45 * vec3(0.85, 0.9, 1.0)
+                             + cloud_light_color * 0.65);
+        cloud = mix(cloud, horizon, 0.7 * smoothstep(0.0, 1.0, t / 12000.0));
+        color = mix(color, cloud, density);
+    }
+    return color;
 }
 
 float sun_shadow() {
@@ -50,43 +132,63 @@ float sun_shadow() {
 }
 
 void main() {
+    // Fade to nothing at the shoreline, so the terrain's edge never shows.
+    if (depth <= 0.0) discard;
+    float d = depth;
+    float shore = d / max(ground_slope, 0.02);
+    float edge = smoothstep(0.0, 0.9, shore);
+
     float t = osg_FrameTime;
-    vec2 slope = wave_slope(world_pos.xz, t);
-    vec3 n_world = normalize(vec3(-slope.x, 1.0, -slope.y));
-    vec3 N = normalize(p3d_NormalMatrix * n_world);
-    vec3 V = normalize(-view_pos);
-    vec3 L = normalize(p3d_LightSource[0].position.xyz);
-    float shadow = sun_shadow();
+    float dist = length(view_pos);
+    vec3 eye = p3d_ViewMatrixInverse[3].xyz;
+    vec3 V = normalize(eye - world_pos);
+    vec3 L = normalize(to_light);
 
-    // Water body: turquoise in the shallows, deep blue further out.
-    float d = max(depth, 0.0);
-    vec3 shallow = vec3(0.10, 0.52, 0.56);
-    vec3 deep = vec3(0.02, 0.11, 0.24);
-    vec3 body = mix(shallow, deep, smoothstep(0.0, 7.0, d));
-    body *= 0.55 + 0.45 * shadow;
+    vec2 slope = wave_slope(world_pos.xz, t, 1.0 - smoothstep(12.0, 60.0, dist));
+    // Ripples are too small to see far off, where they would only flicker.
+    float near = 1.0 - smoothstep(6.0, 18.0, dist);
+    if (rain > 0.0 && near > 0.0) slope += ripple_slope(world_pos.xz, t) * near;
+    vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
+    float shadow = sun_shadow() * cloud_shadow(world_pos, to_light);
 
-    // Sky reflection, stronger at grazing angles (Schlick fresnel).
+    // Water body: clear green-teal in the shallows, deep blue further out,
+    // lit like the ground by sky light plus the sun or moon from above.
+    vec3 shallow = vec3(0.10, 0.46, 0.42);
+    vec3 deep = vec3(0.02, 0.10, 0.20);
+    vec3 body = mix(shallow, deep, smoothstep(0.0, 6.0, d));
+    vec3 daylight = ambient_color * 0.45 + p3d_LightSource[0].color * max(L.y, 0.0) * shadow * 0.7;
+    body *= daylight;
+
+    // Reflection of the sky and clouds, stronger at grazing angles (Schlick
+    // fresnel). Rays bent down by the waves would hit water; mirror them up.
+    vec3 R = reflect(-V, N);
+    R.y = abs(R.y);
     float fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    vec3 sky = fog_color.rgb * 1.05;
-    vec3 color = mix(body, sky, clamp(fresnel * 0.9, 0.0, 1.0));
+    vec3 color = mix(body, sky_toward(R, world_pos), fresnel);
 
     // Sun glint.
-    vec3 R = reflect(-L, N);
-    float rv = max(dot(R, V), 0.0);
+    float rv = max(dot(reflect(-L, N), V), 0.0);
     float spec = (pow(rv, 900.0) * 0.9 + pow(rv, 60.0) * 0.12) * shadow;
     color += p3d_LightSource[0].color * spec;
 
-    // Foam line along the shore, gently pulsing.
-    float shore = 1.0 - smoothstep(0.0, 0.6, d);
-    float pulse = 0.65 + 0.35 * sin(t * 1.7 + world_pos.x * 0.6 + world_pos.z * 0.45);
-    float foam = shore * pulse;
-    color = mix(color, vec3(0.95, 0.97, 1.0), foam * 0.8);
+    // Foam: a thin fringe at the waterline and narrow lines rolling in toward
+    // it, both broken into bubbles. Placed by distance from the shore (depth
+    // over the slope of the ground), so wide flat shallows stay clear.
+    float fringe = smoothstep(0.0, 0.03, depth) * (1.0 - smoothstep(0.15, 0.5, shore));
+    float phase = shore * 0.6 + t * 0.22 + noise_grad(world_pos.xz * 0.35).x * 1.2;
+    float lines = pow(0.5 + 0.5 * cos(phase * 6.2832), 14.0)
+                * (1.0 - smoothstep(1.0, 3.5, shore)) * (1.0 - smoothstep(0.3, 0.8, d));
+    vec2 fp = world_pos.xz + vec2(0.0, t * 0.04);
+    float bubbles = smoothstep(0.45, 0.85, noise_grad(fp * 6.0).x * 0.65 + noise_grad(fp * 15.0).x * 0.35);
+    float foam = max(fringe, lines) * bubbles;
+    color = mix(color, vec3(0.95, 0.97, 1.0) * daylight, foam);
 
-    float alpha = mix(0.45, 0.93, smoothstep(0.0, 3.0, d));
-    alpha = max(alpha, max(fresnel, foam * 0.85));
+    // Clear in the shallows so the seabed shows, murkier with depth.
+    float alpha = mix(0.25, 0.95, smoothstep(0.0, 4.0, d));
+    alpha = max(max(alpha, fresnel) * edge, foam * 0.85);
 
-    float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));
+    float fog = smoothstep(fog_end * 0.3, fog_end, dist);
     color = mix(color, fog_color.rgb, fog);
-    alpha = mix(alpha, 1.0, fog);
+    alpha = mix(alpha, 1.0, fog * max(edge, foam));
     frag_color = vec4(color, alpha);
 }

@@ -14,6 +14,11 @@ uniform vec3 ambient_color;   // scales the sky light: dark blue at night, white
 uniform float fog_end;
 uniform float sea_level;
 uniform float shadow_bias;
+uniform float wetness;      // 0 dry to 1 soaked by rain
+uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
+uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
+
+#include "clouds.glsl"
 
 in vec4 biome;   // r desert, g dry grassland, b snowy; grassland is the rest
 in vec3 world_pos;
@@ -111,14 +116,25 @@ void main() {
     albedo = mix(albedo, rock, smoothstep(0.28, 0.45, slope));
     albedo = mix(albedo, sand, 1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h));
     albedo = mix(albedo, seabed, 1.0 - smoothstep(sea_level - 1.5, sea_level, h));
+    // Wet ground is darker, except under snow: after rain, and always in a
+    // band where the water laps the shore.
+    float lapped = 1.0 - smoothstep(sea_level + 0.05, sea_level + 0.5 + jitter * 0.2, h);
+    albedo *= 1.0 - 0.35 * max(wetness * (1.0 - w_snowy), lapped);
+    // Fresh snow brings the snow line down the mountains and fills in the
+    // bare patches of the snowy biome, on ground flat enough to hold it.
+    float flat_ground = 1.0 - smoothstep(0.35, 0.6, slope);
+    float snow_line = 37.0 - 15.0 * snow_cover;
     albedo = mix(albedo, snow,
-                 smoothstep(37.0, 40.0, h + jitter * 3.0) * (1.0 - smoothstep(0.35, 0.6, slope)));
+                 max(smoothstep(snow_line, snow_line + 3.0, h + jitter * 3.0),
+                     snow_cover * biome.b * smoothstep(sea_level, sea_level + 1.0, h))
+                 * flat_ground);
 
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     float ndl = max(dot(normalize(view_normal), L), 0.0);
     vec3 sky_ambient = mix(vec3(0.20, 0.19, 0.17), vec3(0.36, 0.42, 0.52), n.y * 0.5 + 0.5)
                      * ambient_color;
-    vec3 light = sky_ambient + p3d_LightSource[0].color * ndl * sun_shadow();
+    vec3 light = sky_ambient
+                 + p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light);
     vec3 color = albedo * light;
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));
