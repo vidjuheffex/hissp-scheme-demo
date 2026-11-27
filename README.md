@@ -42,7 +42,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
-  `grass_clumps.png` and `moon.png`
+  `grass_clumps.png` (grass and wildflower sprites) and `moon.png`
   (`uv run --no-project --with pillow --with numpy tools/make_moon.py`)
 - `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
 
@@ -173,7 +173,8 @@ the per-biome height functions. Saving the file regenerates the world.
 ## Grass clumps
 
 Grassland and dry grassland grow clumps of grass in four kinds: short tufts,
-tall grass with seed heads, tufts with flowers, and dry golden tufts. They
+tall grass with seed heads, tufts with flowers, and dry golden tufts (plus
+the wildflowers, below). They
 grow in meadows with bare ground between, and never on beaches, steep slopes,
 the rock band, desert or snow. Clumps are only made for chunks within two of
 the player's chunk, and sink into the ground near the edge of that range.
@@ -184,6 +185,25 @@ The knobs are in the grass clumps section of `src/world_terrain.sld`:
 `GRASS-RADIUS` and `GRASS-FADE` are in `src/world_game.sld`, and wind is in
 `src/shaders/grass.vert`. Saving the terrain file regrows the grass along
 with the chunks.
+
+## Wildflowers
+
+Drifts of wildflowers grow among the grass: daisies (white or yellow), tall
+spikes like lupine (purple, blue, pink) and poppies (orange, red, yellow),
+poppies most in dry grassland. Each kind has bloom spells a couple of days
+long that come and go on their own (daisies are seldom all gone), so the
+meadows change from one day to the next. Out in the desert, low annuals
+(yellow, orange, magenta) come up half a day or so after a storm and fade
+over the next couple of days.
+
+They're clumps in the grass mesh (sprites 4 to 7 of `grass_clumps.png`):
+each clump has its own bloom threshold, so a drift fills in gradually, and
+the grass shader sinks clumps whose kind isn't far enough into bloom and
+colors their petals from the kind's palette. Bloom levels come from `blooms`
+in `src/world_weather.sld`; placement knobs (`FLOWERS`, `FLOWER-CHANCE`,
+`DESERT-FLOWER-CHANCE`, ...) are in the grass clumps section of
+`src/world_terrain.sld`. `(wildflowers)` in the REPL shows the bloom, and
+`(set-blooms! '(1 1 1 1))` forces it (`#f` undoes).
 
 ## Desert plants
 

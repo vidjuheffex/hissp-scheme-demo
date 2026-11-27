@@ -410,7 +410,14 @@
     ;; grass) times a slow "meadow" noise, so grass comes in patches with
     ;; bare ground between. A clump is two crossed quads showing one sprite
     ;; of `assets/textures/grass_clumps.png`: 0 short, 1 tall, 2 flowers,
-    ;; 3 dry.
+    ;; 3 dry, and the wildflowers 4 daisies, 5 spikes, 6 poppies, 7 desert.
+    ;;
+    ;; Wildflowers come in drifts of their own (`FLOWERS` noise), among the
+    ;; grass and, after rain, out in the desert. Which kind a drift is
+    ;; follows another, slower noise. The shader opens or sinks each
+    ;; wildflower clump by how far its kind is into bloom (see `blooms` in
+    ;; (world weather)): every clump has its own threshold, so a drift fills
+    ;; in gradually, and its own petal color from the kind's palette.
 
     (define GRASS-SPACING 1.6)
     (define GRASS-CHANCE 0.85)         ; in full grassland, mid-meadow
@@ -423,7 +430,13 @@
     (define CLUMP-SINK 0.15)           ; push bases into the ground on slopes
     (define CLUMPS-PER-SIDE (exact (round (/ CHUNK-SIZE GRASS-SPACING))))
     (define MAX-CLUMPS (* CLUMPS-PER-SIDE CLUMPS-PER-SIDE))
-    (define SPRITES 4.0)
+    (define SPRITES 8.0)
+    (define FLOWER-FREQUENCY (/ 1.0 18.0))
+    (define FLOWERS (list 0.45 0.65))  ; drift noise ramp from none to thick
+    (define FLOWER-CHANCE 0.8)         ; in grassland, mid-drift
+    (define DRY-FLOWER-CHANCE 0.45)
+    (define DESERT-FLOWER-CHANCE 0.6)
+    (define FLOWER-KIND-FREQUENCY (/ 1.0 70.0))
     (define UV-INSET 0.004)            ; keeps sampling off the neighbor sprite
 
     ;; A spot's random numbers: stream k of spot (gi, gj).
@@ -443,17 +456,27 @@
             ((< flavor 0.82) 1)
             (else 2)))
 
-    (define SPRITE-HEIGHTS (vector 1.0 1.7 1.25 1.15))
+    (define SPRITE-HEIGHTS (vector 1.0 1.7 1.25 1.15 0.85 1.15 0.9 0.7))
 
     ;; Per-sprite color multiplier, so clumps read against the ground
     ;; texture they stand on (the sprites alone are darker than it).
     (define SPRITE-TINTS
       (vector (list 1.1 1.18 0.85) (list 1.0 1.08 0.85) (list 1.08 1.15 1.0)
-              (list 1.12 1.1 0.98)))
+              (list 1.12 1.1 0.98) (list 1.08 1.15 0.9) (list 1.05 1.12 0.9)
+              (list 1.0 1.08 0.9) (list 1.1 1.08 0.95)))
+
+    ;; Which wildflower a drift grows, from the slow kind noise `k` and the
+    ;; share of dry grassland: poppies like it dry.
+    (define (flower-sprite k dry)
+      (cond ((< k (- 0.4 (* 0.3 dry))) 4)
+            ((< k (- 0.7 (* 0.4 dry))) 5)
+            (else 6)))
 
     ;; Write clump number `n` into `mesh`: two crossed quads standing on
-    ;; (x, y, z), spanning +-(dx, dz) sideways and `height` tall.
-    (define (put-clump! mesh n x y z dx dz height sprite r g b)
+    ;; (x, y, z), spanning +-(dx, dz) sideways and `height` tall. A
+    ;; wildflower's `hue` picks its petal color and `opens` is how far into
+    ;; bloom its kind must be for it to show (-1 always, for grass).
+    (define (put-clump! mesh n x y z dx dz height sprite r g b hue opens)
       (let ((top (+ y height))
             (u0 (+ (/ sprite SPRITES) UV-INSET))
             (u1 (- (/ (+ sprite 1) SPRITES) UV-INSET))
@@ -464,8 +487,8 @@
                               (+ x dz) y (- z dx) (- x dz) y (+ z dx)
                               (- x dz) top (+ z dx) (+ x dz) top (- z dx)))
         (vector-copy! (cadr mesh) (* 24 n)
-                      (vector 0.0 0.0 0.0 0.0 0.0 0.0 0.0 height 0.0 0.0 height 0.0
-                              0.0 0.0 0.0 0.0 0.0 0.0 0.0 height 0.0 0.0 height 0.0))
+                      (vector hue 0.0 opens hue 0.0 opens hue height opens hue height opens
+                              hue 0.0 opens hue 0.0 opens hue height opens hue height opens))
         (vector-copy! (list-ref mesh 2) (* 16 n)
                       (vector u0 0.0 u1 0.0 u1 1.0 u0 1.0 u0 0.0 u1 0.0 u1 1.0 u0 1.0))
         (vector-copy! (list-ref mesh 3) (* 32 n)
@@ -480,7 +503,8 @@
     ;;   (vertices normals uvs colors triangles), or #f if nothing grows.
     ;; Normals don't hold a direction: their y is the vertex's height above
     ;; the ground (0 at the bottom). The grass shader uses it for wind sway
-    ;; and for sinking clumps into the ground at the edge of the grass range.
+    ;; and for sinking clumps into the ground at the edge of the grass range,
+    ;; or out of bloom. x is a wildflower's hue and z its bloom threshold.
     ;; Heights follow the same two triangles per cell as the terrain mesh.
     (define (chunk-grass ox oz terrain biomes pause)
       (let ((mesh (list (make-vector (* MAX-CLUMPS 24) 0.0)
@@ -501,10 +525,13 @@
                    (ci (exact (floor fx)))
                    (cj (exact (floor fz)))
                    (c (* 4 (+ ci (* cj VERTS))))
+                   (w-desert (vector-ref biomes c))
                    (w-dry (vector-ref biomes (+ c 1)))
-                   (w-grass (- 1.0 (vector-ref biomes c) w-dry (vector-ref biomes (+ c 2))))
-                   (lush (+ (* GRASS-CHANCE (max w-grass 0.0)) (* DRY-GRASS-CHANCE w-dry))))
-              (when (> lush 0.0)
+                   (w-grass (- 1.0 w-desert w-dry (vector-ref biomes (+ c 2))))
+                   (lush (+ (* GRASS-CHANCE (max w-grass 0.0)) (* DRY-GRASS-CHANCE w-dry)))
+                   (flowery (+ (* FLOWER-CHANCE (max w-grass 0.0)) (* DRY-FLOWER-CHANCE w-dry)))
+                   (desert-flowery (* DESERT-FLOWER-CHANCE w-desert)))
+              (when (> (+ lush desert-flowery) 0.0)
                 (let* ((u (- fx ci))
                        (v (- fz cj))
                        (a (+ 1 (* 3 (+ ci (* cj VERTS)))))
@@ -519,10 +546,41 @@
                                          (abs (- hd hb)) (abs (- hd hc)))
                                     CELL))
                        (lx (* fx CELL))
-                       (lz (* fz CELL)))
-                  (when (and (> h (+ SEA-LEVEL GRASS-SHORE))
-                             (< h GRASS-TOP)
-                             (< gradient GRASS-MAX-GRADIENT)
+                       (lz (* fz CELL))
+                       (wx (+ ox lx SEED-X))
+                       (wz (+ oz lz SEED-Z))
+                       (in-range (and (> h (+ SEA-LEVEL GRASS-SHORE))
+                                      (< h GRASS-TOP)
+                                      (< gradient GRASS-MAX-GRADIENT)))
+                       (drift (if in-range
+                                  (ramp FLOWERS (value-noise (* wx FLOWER-FREQUENCY)
+                                                             (+ 71.3 (* wz FLOWER-FREQUENCY))))
+                                  0.0))
+                       (pick (spot-random gi gj 3)))
+                  (if (< pick (* drift (+ flowery desert-flowery)))
+                      (let* ((r (spot-random gi gj 2))
+                             (sprite (if (< pick (* drift desert-flowery))
+                                         7
+                                         (flower-sprite
+                                           (value-noise (* wx FLOWER-KIND-FREQUENCY)
+                                                        (- (* wz FLOWER-KIND-FREQUENCY) 39.1))
+                                           (/ (* DRY-FLOWER-CHANCE w-dry) (max flowery 1e-6)))))
+                             (size (+ 0.75 (* 0.5 (scramble r 71.3))))
+                             (half-width (* 0.6 size))
+                             (angle (* 3.14159 (scramble r 157.1)))
+                             (tint (vector-ref SPRITE-TINTS sprite)))
+                        (put-clump! mesh count lx
+                                    (- h CLUMP-SINK (* gradient half-width))
+                                    lz
+                                    (* half-width (cos angle))
+                                    (* half-width (sin angle))
+                                    (* size (vector-ref SPRITE-HEIGHTS sprite))
+                                    sprite
+                                    (car tint) (cadr tint) (list-ref tint 2)
+                                    (scramble r 13.7)
+                                    (+ 0.1 (* 0.8 (scramble r 331.7))))
+                        (set! count (+ count 1)))
+                  (when (and in-range
                              (< (spot-random gi gj 0)
                                 (* lush
                                    (ramp MEADOW
@@ -545,8 +603,9 @@
                                   sprite
                                   (* shade (car tint))
                                   (* shade (cadr tint) (+ 0.95 (* 0.1 (scramble r 673.3))))
-                                  (* shade (list-ref tint 2)))
-                      (set! count (+ count 1))))))))
+                                  (* shade (list-ref tint 2))
+                                  0.0 -1.0)
+                      (set! count (+ count 1)))))))))
           (pause))
         (and (> count 0)
              (map (lambda (v per-clump) (vector-copy v 0 (* count per-clump)))

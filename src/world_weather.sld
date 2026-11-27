@@ -13,6 +13,7 @@
           PRECIP-BOX
           weather-target
           wind-speed
+          blooms
           weather-step
           precipitation-mesh)
   (import (scheme base)
@@ -67,6 +68,33 @@
         (+ (* spell (- 1.0 (* 0.75 night)))
            (* 0.6 cover cover)
            (* 0.8 precipitation))))
+
+    ;; --- wildflowers --------------------------------------------------------
+
+    ;; How far into bloom each kind of wildflower is at `days`, 0 to 1:
+    ;; (daisies spikes poppies desert). The meadow flowers each have their
+    ;; spells, a couple of days long, that come and go on their own; daisies
+    ;; are seldom all gone. Desert flowers come up half a day or so after a
+    ;; storm and fade over the next couple of days, more after a long wet
+    ;; spell.
+    (define (blooms days)
+      (let* ((t (+ days (* 0.001 (car (seed-offset)))))
+             (spell (lambda (period salt)
+                      (smooth-step 0.35 0.65 (value-noise (/ t period) salt)))))
+        (list (+ 0.35 (* 0.65 (spell 2.5 11.1)))
+              (spell 3.0 23.7)
+              (spell 2.0 47.3)
+              (desert-bloom days))))
+
+    ;; Recent storms, each counted less the longer ago it was.
+    (define (desert-bloom days)
+      (let loop ((k 5) (total 0.0))
+        (if (> k 40)
+            (clamp01 (/ total 0.35))
+            (let ((ago (* 0.1 k)))
+              (loop (+ k 1)
+                    (+ total (* 0.1 (smooth-step 0.6 0.85 (sky-cover (- days ago)))
+                                (exp (/ (- ago) 1.5)))))))))
 
     ;; `x` moved toward `target` over `dt` seconds, covering most of the
     ;; way in about 3 / `rate` seconds.

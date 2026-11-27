@@ -19,6 +19,8 @@
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
 ;;   (wildlife)                    how many fireflies, bats and birds are out (0 to 1)
 ;;   (sounds)                      ambient loop volumes: wind rain birds crickets water
+;;   (wildflowers)                 bloom of daisies, spikes, poppies, desert flowers
+;;   (set-blooms! '(1 1 1 1))      force the blooms (0 to 1 each); #f undoes
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
 ;;   (biome-here)                  biome weights under the player
@@ -1061,6 +1063,28 @@
     (define (weather-days)
       (+ (state-ref 'day) (/ (state-ref 'time-of-day) 24.0)))
 
+    ;; Recomputes how far into bloom the wildflowers are (see `blooms`)
+    ;; when the clock has moved on a little, or jumped, and hands it to the
+    ;; grass shader. `(set-blooms! ...)` overrides it.
+    (define (update-blooms!)
+      (let ((days (weather-days))
+            (cached (state-ref 'bloom)))
+        (when (or (not cached) (> (abs (- days (car cached))) 0.002))
+          (let ((amounts (or (state-ref 'bloom-override) (blooms days))))
+            (state-set! 'bloom (list days amounts))
+            (set-input! "bloom" (apply make-tuple amounts))))))
+
+    ;; REPL: `(set-blooms! '(1 1 1 1))` puts every wildflower (daisies,
+    ;; spikes, poppies, desert) in full bloom; `(set-blooms! #f)` undoes.
+    (define (set-blooms! amounts)
+      (state-set! 'bloom-override amounts)
+      (state-set! 'bloom #f)
+      (update-blooms!))
+
+    ;; REPL: `(wildflowers)` => how far into bloom (daisies spikes poppies desert).
+    (define (wildflowers)
+      (map (lambda (a) (/ (round (* 100.0 a)) 100.0)) (cadr (state-ref 'bloom))))
+
     ;; Move the weather on `dt` seconds toward what it should be where the
     ;; player stands, and hand it to the shaders.
     (define (update-weather! x z dt)
@@ -1083,6 +1107,7 @@
         (set-input! "rain" (* (cadr now-weather) (- 1.0 (list-ref now-weather 2))))
         (set-input! "drift" (apply make-tuple drift))
         (set-input! "snow_cover" (list-ref now-weather 4))
+        (update-blooms!)
         (when sky
           (call-method (cadr sky) 'set-shader-input "drift" (apply make-tuple drift))
           (let ((precipitation (list-ref sky 2))
@@ -1401,6 +1426,8 @@
         (list (list "sea_level" SEA-LEVEL)
               (list "shadow_bias" SHADOW-BIAS)
               (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))))
+      (state-set! 'bloom #f)
+      (update-blooms!)
       (state-set! 'applied-time #f)
       (apply-time!))
 
