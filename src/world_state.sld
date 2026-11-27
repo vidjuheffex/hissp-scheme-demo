@@ -47,6 +47,8 @@
             (list 'sky #f)               ; (sky clouds precipitation) entities
             (list 'life #f)              ; fireflies, bats and birds, see `make-life!`
             (list 'sounds #f)            ; (audios volumes water-heard next-point), see `make-sounds!`
+            (list 'footsteps #f)         ; (sounds stride-phase last-xz), see `make-footsteps!`
+            (list 'last-ground #f)       ; (x z depth) where the player last stood
             (list 'hud #f)               ; (shadow text shown) coordinates readout, see `make-hud!`
             ;; (cover precipitation snow wetness snow-cover), see (world weather)
             (list 'weather (list 0.0 0.0 0.0 0.0 0.0))

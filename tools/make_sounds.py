@@ -85,9 +85,9 @@ def hann(n):
 def save(name, x, peak=0.85):
     x = x - x.mean()
     x = x * (peak / np.max(np.abs(x)))
-    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / name).parent.mkdir(parents=True, exist_ok=True)
     soundfile.write(OUT / f"{name}.ogg", x.astype(np.float32), RATE, format="OGG", subtype="VORBIS")
-    print(f"{name}.ogg  {len(x) / RATE:.0f} s")
+    print(f"{name}.ogg  {len(x) / RATE:.2f} s")
 
 
 def wind():
@@ -220,9 +220,71 @@ def water():
     return reverb(out, 0.5, 0.2)
 
 
+def burst(m, attack, decay):
+    """An envelope `m` samples long: up over `attack` seconds, then dying away to nothing."""
+    t = np.arange(m) / RATE
+    tail = np.clip((m - np.arange(m)) / (0.4 * m), 0, 1)  # reach silence by the end
+    return np.clip(t / attack, 0, 1) * np.exp(-np.maximum(t - attack, 0) / decay) * tail
+
+
+def grains(out, count, start, spread, lo, hi, gain):
+    """`count` tiny crackles scattered over `spread` seconds from `start`."""
+    for _ in range(count):
+        m = seconds(rng.uniform(0.001, 0.004))
+        at = seconds(start + spread * rng.beta(1.5, 3.0))
+        place(out, shaped_noise(m + 64, lo, hi)[:m] * burst(m, 0.0003, 0.0008) * gain * rng.lognormal(0, 0.5), at)
+
+
+def footstep(surface):
+    """One step, heel then toe, on `surface`."""
+    out = np.zeros(seconds(0.45))
+    toe = rng.uniform(0.05, 0.085)
+    for at, gain in ((0.0, 1.0), (toe, rng.uniform(0.5, 0.8))):
+        if surface == "grass":
+            m = seconds(0.25)
+            place(out, gain * (shaped_noise(m, 50, 260) * burst(m, 0.004, 0.035) * 0.6
+                               + shaped_noise(m, 900, 6000, -0.3) * burst(m, 0.01, 0.06)
+                               + shaped_noise(m, 2500, 9000) * burst(m, 0.03, 0.09) * 0.3), seconds(at))
+        elif surface == "dirt":
+            m = seconds(0.2)
+            place(out, gain * (shaped_noise(m, 60, 400) * burst(m, 0.003, 0.03)
+                               + shaped_noise(m, 400, 3000) * burst(m, 0.006, 0.05) * 0.25), seconds(at))
+            grains(out, int(30 * gain), at, 0.12, 1500, 7000, 0.6)
+        elif surface == "rock":
+            m = seconds(0.15)
+            f = rng.uniform(220, 420)
+            t = np.arange(m) / RATE
+            knock = (np.sin(2 * np.pi * f * t) + 0.4 * np.sin(2 * np.pi * f * 2.7 * t)) * np.exp(-t / 0.025)
+            place(out, gain * (knock * 0.7
+                               + shaped_noise(m, 2000, 9000) * burst(m, 0.0005, 0.006)
+                               + shaped_noise(m, 800, 4000) * burst(m, 0.01, 0.04) * 0.12), seconds(at))
+        elif surface == "snow":
+            m = seconds(0.3)
+            place(out, gain * shaped_noise(m, 40, 200) * burst(m, 0.01, 0.05) * 0.7, seconds(at))
+            grains(out, int(110 * gain), at, 0.2, 900, 5000, 0.5)
+        else:  # water
+            m = seconds(0.4)
+            place(out, gain * (shaped_noise(m, 300, 5000, -0.3) * burst(m, 0.015, 0.14)
+                               + shaped_noise(m, 90, 500) * burst(m, 0.02, 0.1) * 0.6), seconds(at))
+            for _ in range(int(5 * gain)):  # drops falling back
+                d = seconds(rng.uniform(0.03, 0.07))
+                t = np.arange(d) / RATE
+                f = rng.uniform(600, 1800) * (1 + 1.5 * t / t[-1])
+                place(out, tone(f, np.exp(-t / 0.015), (1.0,)) * 0.15, seconds(at + rng.uniform(0.06, 0.3)))
+    fade = np.ones(len(out))
+    fade[-seconds(0.05):] = np.linspace(1, 0, seconds(0.05))
+    return out * fade
+
+
+FOOTSTEP_LOUDNESS = {"grass": 0.5, "dirt": 0.65, "rock": 0.6, "snow": 0.55, "water": 0.7}
+
+
 if __name__ == "__main__":
     save("wind", wind())
     save("rain", rain())
     save("birds", birds())
     save("crickets", crickets())
     save("water", water())
+    for surface, loudness in FOOTSTEP_LOUDNESS.items():
+        for k in range(1, 5):
+            save(f"steps/{surface}-{k}", footstep(surface), loudness)

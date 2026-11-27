@@ -38,7 +38,7 @@
     (srfi 177)
     (only sys argv)
     (only readline read-history-file write-history-file set-history-length)
-    (only random randrange)
+    (only random randrange random)
     (only array array)
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
     (world state)
@@ -47,7 +47,7 @@
     (world weather)
     (world life)
     (only ursina
-          Audio DirectionalLight Entity Mesh Text Ursina application camera destroy mouse window)
+          Audio DirectionalLight Entity Mesh Text Ursina application camera destroy held-keys mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
@@ -1224,9 +1224,116 @@
           (attribute-set! (cadr hud) 'text shown)
           (set-car! (cddr hud) shown))))
 
+    ;; --- walking ---------------------------------------------------------
+
+    ;; Meters a second; Shift sprints.
+    (define WALK-SPEED 5.0)
+    (define SPRINT-SPEED 10.0)
+
+    ;; Deepest water the player can wade into: about ankle deep.
+    (define WADE-DEPTH 0.15)
+
+    (define SURFACES (list "grass" "dirt" "rock" "snow" "water"))
+    (define STEP-VARIANTS 4)
+
+    ;; One sound per variant of each surface's step, from assets/sounds/steps.
+    (define (make-footsteps!)
+      (state-set! 'footsteps
+                  (list (map (lambda (surface)
+                               (map (lambda (k)
+                                      (call/kw Audio
+                                               (sound_file_name
+                                                 (Path (asset-path "assets" "sounds" "steps"
+                                                                   (string-append surface "-"
+                                                                                  (number->string k)
+                                                                                  ".ogg")))
+                                                autoplay #f
+                                                auto_destroy #f
+                                                group "sfx")))
+                                    (list 1 2 3 4)))
+                             SURFACES)
+                        0.0 #f)))
+
+    ;; Undoes the controller's last move where it would take the player into
+    ;; water deeper than `WADE-DEPTH`, sliding along the shore if moving
+    ;; along just one axis would do. Deeper is allowed only when it's no
+    ;; deeper than where the player already was, so being put out in deep
+    ;; water (`go-to!`) doesn't trap them. Returns the terrain height under
+    ;; the player.
+    (define (keep-out-of-deep-water! player)
+      (let* ((last (state-ref 'last-ground))
+             (x (attribute-ref player 'x))
+             (z (attribute-ref player 'z))
+             (depth (lambda (x z) (- SEA-LEVEL (terrain-height x z))))
+             (d (depth x z))
+             (allowed (lambda (d) (or (not last) (<= d WADE-DEPTH) (<= d (list-ref last 2))))))
+        (unless (allowed d)
+          (let ((lx (car last)) (lz (cadr last)))
+            (let ((dx (depth x lz)))
+              (if (allowed dx)
+                  (begin (set! z lz) (set! d dx))
+                  (let ((dz (depth lx z)))
+                    (if (allowed dz)
+                        (begin (set! x lx) (set! d dz))
+                        (begin (set! x lx) (set! z lz) (set! d (list-ref last 2)))))))
+            (attribute-set! player 'x x)
+            (attribute-set! player 'z z)))
+        (state-set! 'last-ground (list x z d))
+        (- SEA-LEVEL d)))
+
+    ;; What the ground at (x, z), terrain height `h`, sounds like underfoot,
+    ;; following the terrain shader's choice of ground cover.
+    (define (surface-at x z h)
+      (let* ((weights (biome-weights x z))
+             (desert (car weights))
+             (snowy (list-ref weights 2))
+             (snow-cover (list-ref (state-ref 'weather) 4))
+             (gx (- (terrain-height (+ x 0.7) z) h))
+             (gz (- (terrain-height x (+ z 0.7)) h))
+             (slope (- 1.0 (/ 0.7 (sqrt (+ 0.49 (* gx gx) (* gz gz)))))))
+        (cond ((< h (+ SEA-LEVEL 0.05)) "water")
+              ((and (< slope 0.5)
+                    (or (> snowy 0.5)
+                        (> h (- 37.0 (* 15.0 snow-cover)))
+                        (> (* snow-cover snowy) 0.3)))
+               "snow")
+              ((or (> slope 0.36) (and (> h 30.0) (< snowy 0.5))) "rock")
+              ((or (< h (+ SEA-LEVEL 1.1)) (> desert 0.5)) "dirt")
+              (else "grass"))))
+
+    ;; Sets the walking speed, and plays a footstep each stride: strides
+    ;; come quicker the faster the player goes, and land harder.
+    (define (update-walking! player x z h dt)
+      (attribute-set! player 'speed
+                      (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED))
+      (let ((steps (state-ref 'footsteps)))
+        (when (and steps (> dt 0.0))
+          (let* ((was (list-ref steps 2))
+                 (moved (if was (sqrt (+ (square (- x (car was))) (square (- z (cadr was))))) 0.0))
+                 (speed (if (< moved 5.0) (/ moved dt) 0.0))
+                 (phase (if (< speed 0.5)
+                            0.6
+                            (+ (cadr steps) (* dt (+ 1.3 (* 0.12 speed)))))))
+            (when (>= phase 1.0)
+              (set! phase (- phase 1.0))
+              (let* ((variants (list-ref (car steps)
+                                         (list-index-of SURFACES (surface-at x z h))))
+                     (audio (list-ref variants (randrange STEP-VARIANTS))))
+                (attribute-set! audio 'volume (min 0.9 (+ 0.3 (* 0.05 speed))))
+                (attribute-set! audio 'pitch (+ 0.92 (* 0.16 (random))))
+                (call-method audio 'play)))
+            (state-set! 'footsteps (list (car steps) phase (list x z)))))))
+
+    (define (list-index-of items item)
+      (let loop ((items items) (k 0))
+        (cond ((null? items) #f)
+              ((equal? (car items) item) k)
+              (else (loop (cdr items) (+ k 1))))))
+
     (define (world-update)
       (keep-out-of-trunks! (state-ref 'player))
       (let* ((player (state-ref 'player))
+             (bottom (keep-out-of-deep-water! player))
              (x (attribute-ref player 'x))
              (z (attribute-ref player 'z))
              (pcx (world->chunk x))
@@ -1237,9 +1344,11 @@
           (update-weather! x z dt)
           (apply-time!)
           (update-life! x z)
-          (update-sounds! x z dt))
-        ;; Stick the player to the ground (gravity is off on the controller).
-        (attribute-set! player 'y (ground-height x z))
+          (update-sounds! x z dt)
+          (update-walking! player x z bottom dt))
+        ;; Stick the player to the ground (gravity is off on the controller),
+        ;; wading on the bottom in the shallows.
+        (attribute-set! player 'y (max bottom (- SEA-LEVEL WADE-DEPTH)))
         (follow-sun! x z)
         (update-hud! player)
         (build-finished! pcx pcz)
@@ -1561,6 +1670,7 @@
         (make-life!)
         (make-hud!)
         (make-sounds!)
+        (make-footsteps!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)
@@ -1573,7 +1683,7 @@
         (let* ((player (call/kw FirstPersonController
                                 (position (make-tuple 0 (ground-height 0 0) 0)
                                  gravity 0
-                                 speed 12)))
+                                 speed WALK-SPEED)))
                (world (Entity)))
           (state-set! 'player player)
           (attribute-set! world 'update (lambda () (frame-safely)))

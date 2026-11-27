@@ -8,8 +8,9 @@ uv run main.py        # new random world each run (seed is printed and in the ti
 uv run main.py 1234   # revisit a world by seed
 ```
 
-Controls: WASD to walk, mouse to look, Escape to toggle mouse lock. Your
-position (meters) is shown in the top left corner.
+Controls: WASD to walk (Shift to sprint), mouse to look, Escape to toggle
+mouse lock. You can wade into water up to about ankle deep, but no deeper.
+Your position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`
 (`uv lock --upgrade-package hissp-scheme` moves it to the latest `main`).
@@ -36,7 +37,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   coordinates readout's text; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
-- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water), synthesized by
+- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water) and footsteps, synthesized by
   `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
@@ -147,7 +148,11 @@ seconds) toward a volume set by what's around you:
   nearer and in the wind. The terrain is checked at points on three rings
   around you, one point a frame.
 
-The loops are synthesized, not recorded: `tools/make_sounds.py` shapes noise
+Footsteps follow the ground underfoot (grass, dirt and sand, rock, snow,
+shallow water), with four variations of each; strides quicken and land harder
+the faster you go.
+
+The loops and footsteps are synthesized, not recorded: `tools/make_sounds.py` shapes noise
 and tones in numpy and writes Ogg Vorbis. `(sounds)` in the REPL shows the
 current volumes.
 
