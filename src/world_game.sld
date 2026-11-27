@@ -578,6 +578,7 @@
         (call-method precipitation 'hide 1)
         (call-method precipitation 'set-shader-input "box" (rgb PRECIP-BOX))
         (call-method precipitation 'set-shader-input "wind" (rgb WIND))
+        (call-method precipitation 'set-shader-input "eye_velocity" (make-tuple 0.0 0.0 0.0))
         (state-set! 'sky (list sky clouds precipitation))))
 
     ;; Fireflies, bats and birds (see (world life)): one mesh that follows
@@ -760,6 +761,26 @@
     (define (sounds)
       (map (lambda (v) (/ (round (* 100.0 v)) 100.0)) (cadr (state-ref 'sounds))))
 
+    ;; How fast the camera is moving (x y z), smoothed over a few frames,
+    ;; from where it was last frame; jumps (teleports, reloads) count as
+    ;; standing still.
+    (define (eye-velocity! eye)
+      (let* ((t (now))
+             (here (list (attribute-ref eye 'x) (attribute-ref eye 'y) (attribute-ref eye 'z)))
+             (last (state-ref 'eye-motion))
+             (velocity
+               (if (not last)
+                   (list 0.0 0.0 0.0)
+                   (let* ((dt (- t (car last)))
+                          (step (map - here (cadr last)))
+                          (raw (if (and (> dt 0.0) (< (apply + (map abs step)) 3.0))
+                                   (map (lambda (d) (/ d dt)) step)
+                                   (list 0.0 0.0 0.0))))
+                     (map (lambda (old new) (+ old (* 0.3 (- new old))))
+                          (list-ref last 2) raw)))))
+        (state-set! 'eye-motion (list t here velocity))
+        (make-tuple (car velocity) (cadr velocity) (list-ref velocity 2))))
+
     (define (sky-position eye dir distance)
       (make-tuple (- (attribute-ref eye 'x) (* (car dir) distance))
                   (- (attribute-ref eye 'y) (* (cadr dir) distance))
@@ -792,7 +813,8 @@
           (when sky
             (for-each (lambda (entity) (attribute-set! entity 'position eye)) sky)
             (call-method (cadr sky) 'set-shader-input "eye" eye)
-            (call-method (list-ref sky 2) 'set-shader-input "eye" eye)))
+            (call-method (list-ref sky 2) 'set-shader-input "eye" eye)
+            (call-method (list-ref sky 2) 'set-shader-input "eye_velocity" (eye-velocity! eye))))
         (let ((life (state-ref 'life)))
           (when life
             (attribute-set! (car life) 'position eye)

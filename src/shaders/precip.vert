@@ -8,6 +8,7 @@ uniform vec3 box;          // size of the box of drops around it
 uniform float intensity;   // 0 nothing to 1 a downpour
 uniform float snow;        // 0 rain to 1 snow
 uniform vec2 wind;         // direction (x z) the wind blows
+uniform vec3 eye_velocity; // how fast the camera is moving (m/s)
 
 in vec4 p3d_Vertex;          // the drop's spot in the box, same for all four corners
 in vec2 p3d_MultiTexCoord0;  // corner: x -1 or 1 across, y 0 or 1 along the fall
@@ -28,12 +29,15 @@ void main() {
     vec3 world = p3d_Vertex.xyz + velocity * t + sway;
     vec3 local = mod(world - eye + box * 0.5, box) - box * 0.5;
 
-    // A streak along the fall (rain) or a small square (snow), turned to
-    // face the camera, and nothing at all above the current intensity.
-    vec3 along = normalize(velocity);
+    // A streak (rain) or a small square (snow), turned to face the camera,
+    // and nothing at all above the current intensity. Streaks lie along the
+    // drop's motion as the moving eye sees it, and stretch with it: walking
+    // into the rain, the drops ahead rush up and past, not down.
+    vec3 seen = velocity - eye_velocity;
+    vec3 along = normalize(seen);
     vec3 side = normalize(cross(along, local + vec3(1e-3)));
     float size = step(r, intensity);
-    float len = mix(0.5, 0.06, snow) * size;
+    float len = mix(0.5, 0.06, snow) * size * clamp(length(seen) / length(velocity), 1.0, 2.5);
     float width = mix(0.006, 0.03, snow) * size;
     vec3 p = local + side * width * p3d_MultiTexCoord0.x + along * len * (p3d_MultiTexCoord0.y - 0.5);
 
