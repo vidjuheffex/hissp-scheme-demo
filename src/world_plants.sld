@@ -464,23 +464,30 @@
 
     ;; A lumpy clump of leaves around `center`, radius `r` and its height
     ;; `flat` times that. Normals lean away from `heart`, the middle of the
-    ;; crown, so the clumps of a crown shade as one mass.
+    ;; crown, `CROWN-ROUNDING` times as much as away from their own middle,
+    ;; so the clumps of a crown shade as one soft mass.
+    (define CLUMP-RINGS 7)
+    (define CLUMP-STEPS 16)
+    (define CROWN-ROUNDING 1.0)
     (define (clump! b rng center r flat heart color)
       (let ((a (call-method rng 'uniform 0.0 6.0))
             (c (call-method rng 'uniform 0.0 6.0))
             (e (call-method rng 'uniform 0.0 6.0)))
-        (band! b 4 8
+        (band! b CLUMP-RINGS CLUMP-STEPS
                (lambda (j i)
-                 (let* ((phi (- (* PI (/ j 4.0)) (/ PI 2.0)))
-                        (theta (* -2.0 PI (/ i 8.0)))
+                 (let* ((phi (- (* PI (/ j CLUMP-RINGS)) (/ PI 2.0)))
+                        (theta (* -2.0 PI (/ i CLUMP-STEPS)))
                         (d (list (* (cos phi) (cos theta)) (sin phi) (* (cos phi) (sin theta))))
                         (lump (+ 1.0
-                                 (* 0.3 (sin (+ (* 3.1 (x-of d)) a)) (sin (+ (* 2.7 (y-of d)) c)))
-                                 (* 0.15 (sin (+ (* 5.3 (z-of d)) e)))))
+                                 (* 0.22 (sin (+ (* 3.1 (x-of d)) a)) (sin (+ (* 2.7 (y-of d)) c)))
+                                 (* 0.1 (sin (+ (* 5.3 (z-of d)) e)))
+                                 ;; Small bunches of leaves along the outline.
+                                 (* 0.07 (sin (+ (* 9.1 (x-of d)) c)) (sin (+ (* 8.3 (z-of d)) a))
+                                    (cos (* 7.7 (y-of d))))))
                         (p (v+ center (list (* r lump (x-of d))
                                             (* r flat lump (y-of d))
                                             (* r lump (z-of d)))))
-                        (n (normalize (v+ d (v* (normalize (v- p heart)) 0.8)))))
+                        (n (normalize (v+ d (v* (normalize (v- p heart)) CROWN-ROUNDING)))))
                    (list p n (v* color (+ 0.62 (* 0.45 (smooth -1.0 1.0 (y-of n))))) (y-of d)))))))
 
 ;; Broadleaf trees: one or more trunks under a crown of overlapping leaf
@@ -490,15 +497,15 @@
     ;; the `clump` radius and `flat` its height over its width.
     (define OAK
       '((height 6.0 9.5) (stems . 1) (fork . 0.35) (middle . 0.66) (width . 0.36)
-        (depth . 0.26) (clumps 8 11) (clump . 0.15) (flat . 0.8) (girth . 0.035)
+        (depth . 0.26) (clumps 12 16) (clump . 0.13) (flat . 0.8) (girth . 0.035)
         (foliage 0.26 0.42 0.15) (bark 0.33 0.27 0.22)))
     (define JUNIPER
       '((height 2.8 4.2) (stems . 3) (fork . 0.15) (middle . 0.55) (width . 0.36)
-        (depth . 0.36) (clumps 5 7) (clump . 0.19) (flat . 0.85) (girth . 0.04)
+        (depth . 0.36) (clumps 8 10) (clump . 0.16) (flat . 0.85) (girth . 0.04)
         (foliage 0.19 0.30 0.22) (bark 0.40 0.30 0.24)))
     (define MESQUITE
       '((height 2.5 4.0) (stems . 3) (fork . 0.35) (middle . 0.75) (width . 0.6)
-        (depth . 0.18) (clumps 7 10) (clump . 0.2) (flat . 0.5) (girth . 0.03)
+        (depth . 0.18) (clumps 10 14) (clump . 0.17) (flat . 0.5) (girth . 0.03)
         (foliage 0.42 0.50 0.24) (bark 0.30 0.22 0.17)))
 
     (define LIMBS 5)   ; at most, to the lowest clumps; the rest hide inside

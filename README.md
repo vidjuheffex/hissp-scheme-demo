@@ -260,8 +260,11 @@ Conifers are built by `make-conifer`, tiers of ragged, drooping needle
 skirts. Oaks, junipers and mesquite share `make-broadleaf`: trunks under a
 crown of overlapping leaf clumps with limbs reaching out to them, and the
 `OAK`, `JUNIPER` and `MESQUITE` forms set their proportions. In
-`plant.frag` bark gets furrows, needles tufts and leaves clusters with dark
-gaps, and fresh snow settles on the tops of branches; `plant.vert` sways
+`plant.frag` bark gets furrows and needles tufts; leaf clumps are lit
+cartoon-style in flat bands of shade, half light and light, their edges
+ragged leaf by leaf, with each clump's underside darkening into the gap
+beneath (`CLUMP-RINGS`, `CLUMP-STEPS` and `CROWN-ROUNDING` in
+`src/world_plants.sld` shape the clumps). Fresh snow settles on the tops of branches; `plant.vert` sways
 trees in the wind. You can't walk through trunks: each chunk keeps its
 trees' positions for `keep-out-of-trunks!` in `src/world_game.sld`.
 

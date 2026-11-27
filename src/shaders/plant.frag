@@ -111,6 +111,7 @@ void main() {
     vec3 color = albedo;
     float thin = 0.0;    // how much light shows through from behind
     float sheen = 0.0;   // waxy highlight
+    float ragged = 0.0;  // foliage: shifts its light bands leaf by leaf
     if (material == PAD) {
         color *= 0.9 + 0.2 * blotch(world_pos * 5.0);
         // Areoles: brown dots with a pale tuft of glochids.
@@ -155,11 +156,14 @@ void main() {
         color *= mix(1.0, 0.7 + 0.6 * tufts, detail * 0.8 + 0.2);
         thin = 0.05;
     } else if (material == FOLIAGE) {
-        // Clusters of leaves, with dark gaps between, in two sizes.
+        // Clusters of leaves in two sizes. They also rag the edges of the
+        // light bands (below), and each clump's underside darkens into the
+        // gap above the clump beneath.
         float leaves = blotch(world_pos * 2.5) * 0.55 + blotch(world_pos * 7.0) * 0.45;
-        color *= mix(0.92, 0.6 + 0.75 * leaves, detail * 0.7 + 0.3);
-        thin = 0.5;
-        sheen = 0.08;
+        color *= mix(0.95, 0.8 + 0.3 * leaves, detail * 0.7 + 0.3);
+        color *= mix(0.5, 1.0, smoothstep(-0.7, 0.35, across));
+        ragged = (leaves - 0.5) * mix(0.25, 0.7, detail);
+        thin = 0.35;
     } else if (material == ROCK) {
         // `across` runs from speckled granite (-1) to banded sandstone (1).
         // Mottled at three sizes; darker crusts and pale flecks on granite,
@@ -230,6 +234,15 @@ void main() {
                      * ambient_color * mix(0.45, 1.0, ao);
     vec3 sun = p3d_LightSource[0].color * shadow;
     vec3 light = sky_ambient + sun * ndl * mix(0.8, 1.0, ao);
+    if (material == FOLIAGE) {
+        // Cartoon foliage: shade, half-lit and lit in flat bands, their
+        // edges broken up by the leaves.
+        float x = ndl * shadow + ragged;
+        float w = fwidth(x) + 0.015;
+        float bands = 0.4 * smoothstep(0.12 - w, 0.12 + w, x)
+                    + 0.6 * smoothstep(0.5 - w, 0.5 + w, x);
+        light = sky_ambient + p3d_LightSource[0].color * bands;
+    }
     // Backlit pads and leaves glow.
     float behind = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0);
     vec3 glow = sun * behind * thin * 0.6 * vec3(1.0, 1.15, 0.55);
