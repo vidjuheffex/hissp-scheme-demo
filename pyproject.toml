@@ -1,0 +1,29 @@
+[project]
+name = "hissp-scheme-game"
+version = "0.1.0"
+description = "Infinite procedural terrain walker written in Scheme on Hissp + Ursina"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "hissp-scheme",
+    "hissp>=0.5.0",
+    "panda3d==1.11.0.dev3849",
+    "ursina",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.uv.sources]
+hissp-scheme = { path = "../hissp-scheme", editable = true }
+ursina = { git = "https://github.com/pokepetter/ursina", branch = "master" }
+panda3d = { index = "panda3d-archive" }
+
+[[tool.uv.index]]
+name = "panda3d-archive"
+url = "https://archive.panda3d.org/simple"
+explicit = true

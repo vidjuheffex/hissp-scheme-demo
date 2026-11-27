@@ -1,0 +1,12 @@
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Hissp-generated modules
+.scheme-build/
+
+.venv
+.DS_Store
