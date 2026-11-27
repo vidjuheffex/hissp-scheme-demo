@@ -303,14 +303,14 @@
     (define (direct-corner ix iz)
       (feature-noises (* ix FEATURE-STEP) (* iz FEATURE-STEP)))
 
-    ;; Where (x, z) falls in the lattice: (ix iz u v), the lattice cell and
-    ;; how far across it.
+    ;; Where (x, z) falls in the lattice: four values, the lattice cell
+    ;; (ix iz) and how far across it (u v).
     (define (lattice-cell x z)
       (let* ((fx (/ x FEATURE-STEP))
              (fz (/ z FEATURE-STEP))
              (ix (exact (floor fx)))
              (iz (exact (floor fz))))
-        (list ix iz (- fx ix) (- fz iz))))
+        (values ix iz (- fx ix) (- fz iz))))
 
     (define (blend-corners a b c d u v)
       (vector (bilerp (vector-ref a 0) (vector-ref b 0) (vector-ref c 0) (vector-ref d 0) u v)
@@ -319,29 +319,25 @@
 
     ;; The feature noises at (x, z): #(channel cliff-region cliff-steps).
     (define (features x z)
-      (let* ((cell (lattice-cell x z))
-             (ix (car cell))
-             (iz (cadr cell)))
+      (let-values (((ix iz u v) (lattice-cell x z)))
         (blend-corners (direct-corner ix iz) (direct-corner (+ ix 1) iz)
                        (direct-corner ix (+ iz 1)) (direct-corner (+ ix 1) (+ iz 1))
-                       (list-ref cell 2) (list-ref cell 3))))
+                       u v)))
 
     ;; `features` for a count x count grid (row-major) whose first sample is
     ;; world (x0, z0), as one vector of feature vectors. Each lattice point
     ;; and each column's cell are worked out once, and the arithmetic is
     ;; `features`' own, so the two agree exactly.
     (define (feature-grid x0 z0 step count)
-      (let* ((first (lattice-cell x0 z0))
-             (ix0 (car first))
-             (iz0 (cadr first))
-             (columns (make-vector count #f))
-             (rows (make-vector count #f))
-             (n 0))
+      (let*-values (((ix0 iz0 u0 v0) (lattice-cell x0 z0))
+                    ((columns) (make-vector count #f))
+                    ((rows) (make-vector count #f))
+                    ((n) 0))
         (do ((i 0 (+ i 1))) ((= i count))
-          (let ((cell (lattice-cell (+ x0 (* i step)) (+ z0 (* i step)))))
-            (vector-set! columns i (cons (- (car cell) ix0) (list-ref cell 2)))
-            (vector-set! rows i (cons (- (cadr cell) iz0) (list-ref cell 3)))
-            (set! n (max n (+ 2 (- (car cell) ix0)) (+ 2 (- (cadr cell) iz0))))))
+          (let-values (((ix iz u v) (lattice-cell (+ x0 (* i step)) (+ z0 (* i step)))))
+            (vector-set! columns i (cons (- ix ix0) u))
+            (vector-set! rows i (cons (- iz iz0) v))
+            (set! n (max n (+ 2 (- ix ix0)) (+ 2 (- iz iz0))))))
         (let ((lattice (make-vector (* n n) #f))
               (out (make-vector (* count count) #f)))
           (do ((j 0 (+ j 1))) ((= j n))
@@ -480,8 +476,9 @@
     ;; row's z weight once per row, and each sample is then a single lerp.
 
     ;; Per-axis setup: for `count` samples starting at world coordinate `start`
-    ;; spaced `step` apart, return (first-cell cell-offsets weights), where
-    ;; cell-offsets[i] is the sample's lattice cell relative to first-cell.
+    ;; spaced `step` apart, return three values: first-cell, cell-offsets and
+    ;; weights, where cell-offsets[i] is the sample's lattice cell relative
+    ;; to first-cell.
     (define (axis-cells start step count scale)
       (let* ((first (floor (* start scale)))
              (offsets (make-vector count 0))
@@ -491,7 +488,7 @@
                  (cell (floor p)))
             (vector-set! offsets i (exact (- cell first)))
             (vector-set! weights i (smooth (- p cell)))))
-        (list first offsets weights)))
+        (values first offsets weights)))
 
     ;; Fill `out` (count x count, row-major) with fbm noise in [0, 1) for a grid
     ;; whose first sample is world (x0, z0). Calls `pause` between rows so a
@@ -500,15 +497,13 @@
       (vector-fill! out 0.0)
       (let octave ((o 0) (freq BASE-FREQUENCY) (amp (/ 0.5 FBM-NORM)))
         (when (< o OCTAVES)
-          (let* ((xs (axis-cells (+ x0 SEED-X) step count freq))
-                 (zs (axis-cells (+ z0 SEED-Z) step count freq))
-                 (cx0 (car xs)) (col-cells (cadr xs)) (col-weights (list-ref xs 2))
-                 (cz0 (car zs)) (row-cells (cadr zs)) (row-weights (list-ref zs 2))
-                 ;; Lattice points needed, +1 for each cell's far corner.
-                 (width (+ (vector-ref col-cells (- count 1)) 2))
-                 (height (+ (vector-ref row-cells (- count 1)) 2))
-                 (lattice (make-vector (* width height) 0.0))
-                 (blended (make-vector width 0.0)))
+          (let*-values (((cx0 col-cells col-weights) (axis-cells (+ x0 SEED-X) step count freq))
+                        ((cz0 row-cells row-weights) (axis-cells (+ z0 SEED-Z) step count freq))
+                        ;; Lattice points needed, +1 for each cell's far corner.
+                        ((width) (+ (vector-ref col-cells (- count 1)) 2))
+                        ((height) (+ (vector-ref row-cells (- count 1)) 2))
+                        ((lattice) (make-vector (* width height) 0.0))
+                        ((blended) (make-vector width 0.0)))
             (do ((j 0 (+ j 1))) ((= j height))
               (do ((i 0 (+ i 1))) ((= i width))
                 (vector-set! lattice (+ i (* j width))
