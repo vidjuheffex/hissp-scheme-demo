@@ -25,9 +25,9 @@ void main() {
     // and is gone soon after sunrise. Blending them by coverage, rather than
     // darkening the color, keeps the terminator from turning into a dark
     // band against the daytime sky.
-    vec3 lit_color = mix(albedo, vec3(0.86, 0.9, 0.97), 0.5 * glare) * shading;
+    vec3 lit_color = mix(albedo, vec3(0.9, 0.94, 1.0), 0.75 * glare) * shading;
     vec3 dark_color = albedo * 0.08;
-    float lit_alpha = lit * mix(1.0, 0.35, glare);
+    float lit_alpha = lit * mix(1.0, 0.22, glare);
     float dark_alpha = (1.0 - lit) * 0.3 * (1.0 - smoothstep(0.0, 0.3, glare));
     float alpha = lit_alpha + dark_alpha;
     vec3 color = (lit_color * lit_alpha + dark_color * dark_alpha) / max(alpha, 0.001);
