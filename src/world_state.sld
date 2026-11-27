@@ -7,7 +7,7 @@
 ;; its shape needs a restart.
 
 (define-library (world state)
-  (export state state-ref state-set! lock work-available)
+  (export state state-ref state-set! lock work-available repl-done)
   (import (scheme base)
           (srfi 18)
           (srfi 69))
@@ -19,6 +19,8 @@
     ;; Guards the chunk worker's job queue and results, and the dev command queue.
     (define lock (make-mutex "chunk-queue"))
     (define work-available (make-condition-variable "chunk-work"))
+    ;; Signalled when the main thread has finished a REPL line.
+    (define repl-done (make-condition-variable "repl-done"))
 
     (for-each
       (lambda (entry) (hash-table-set! state (car entry) (cadr entry)))
@@ -36,7 +38,9 @@
             (list 'day-length 240.0)     ; real seconds per in-game day; 0 freezes
             (list 'last-tick 0.0)
             (list 'applied-time #f)      ; time the scene was last lit for
-            (list 'sun-dir #f)           ; direction the light travels            (list 'player #f)
+            (list 'sun-dir #f)           ; direction the light travels
+            (list 'repl-busy #f)         ; a REPL line is waiting to be evaluated
+            (list 'player #f)
             (list 'sun #f)
             (list 'world-root #f)
             (list 'terrain-shader #f)

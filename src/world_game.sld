@@ -29,7 +29,8 @@
     (srfi 18)
     (srfi 69)
     (srfi 177)
-    (only sys argv stdout)
+    (only sys argv)
+    (only readline read-history-file write-history-file set-history-length)
     (only random randrange)
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
     (world state)
@@ -716,29 +717,55 @@
                (code (call-method compiler 'compile source)))
           (exec code (globals)))))
 
-    ;; The prompt is printed by the main thread, after each result. If the
-    ;; reader printed it, it would land before the result and the next line
-    ;; would show no prompt.
-    (define (repl-prompt)
-      (display "> ")
-      (call-method stdout 'flush))
+    ;; Up/down recall earlier lines (importing `readline` turns that on for
+    ;; `input`), including lines from earlier runs.
+    (define HISTORY-FILE
+      (string-append (str (call-method Path 'home)) "/.hissp_scheme_game_history"))
+
+    (define (load-history!)
+      (set-history-length 1000)
+      (guard (e (else #f)) (read-history-file HISTORY-FILE)))
+
+    (define (save-history!)
+      (guard (e (else #f)) (write-history-file HISTORY-FILE)))
+
+    ;; The reader waits for each line to finish before showing the next
+    ;; prompt, so results print above it. `input` draws the prompt itself,
+    ;; so line editing redraws it correctly.
+    (define (repl-wait!)
+      (mutex-lock! lock)
+      (if (state-ref 'repl-busy)
+          (begin (mutex-unlock! lock repl-done)
+                 (repl-wait!))
+          (mutex-unlock! lock)))
+
+    (define (repl-finished!)
+      (with-lock
+        (lambda ()
+          (state-set! 'repl-busy #f)
+          (condition-variable-broadcast! repl-done))))
 
     (define (repl-loop)
       ;; EOF (or no terminal at all) ends the loop.
-      (let ((line (guard (e (else #f)) (input ""))))
+      (let ((line (guard (e (else #f)) (input "> "))))
         (when line
-          (enqueue-dev!
-            (lambda ()
-              (unless (equal? (call-method line 'strip) "")
-                (repl-eval! line))
-              (repl-prompt)))
-          (repl-loop))))
+          (let ((blank? (equal? (call-method line 'strip) "")))
+            (unless blank? (save-history!))
+            (with-lock (lambda () (state-set! 'repl-busy #t)))
+            (enqueue-dev!
+              (lambda ()
+                (dynamic-wind
+                  (lambda () #f)
+                  (lambda () (unless blank? (repl-eval! line)))
+                  repl-finished!)))
+            (repl-wait!)
+            (repl-loop)))))
 
     (define (start-repl!)
-      (thread-start! (make-thread (lambda () (repl-loop)) "repl"))
+      (load-history!)
       (display "Entering REPL. Type one Scheme form per line.")
       (newline)
-      (repl-prompt))
+      (thread-start! (make-thread (lambda () (repl-loop)) "repl")))
 
     ;; --- setup -----------------------------------------------------------
 
