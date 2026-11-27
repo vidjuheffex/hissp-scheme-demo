@@ -991,7 +991,8 @@
     ;;    cloud-light-direction cloud-light-color stars)
     ;; `glare` (0 to 1) is how much daylight washes out the moon: most with
     ;; the sun high, less near sunrise and sunset, none at night. Overcast
-    ;; turns the sky grey and hides the sun's glow; rain darkens it more. It
+    ;; turns the sky the grey of the cloud's underside and hides the sun's
+    ;; glow; rain darkens it more. It
     ;; doesn't dim the light itself: shaders shade what's under a cloud.
     ;; `stars` (0 to 1) is how bright the stars are: out once the sky darkens,
     ;; washed out by a bright moon, gone under overcast or rain.
@@ -1021,16 +1022,23 @@
              (sun-on-clouds? (> height -0.2))
              (night-sky (lerp-list SKY-NIGHT SKY-MOONLIT (* moonlight dim)))
              (clear-sky (lerp-list (lerp-list night-sky SKY-DAY day) SKY-DUSK twilight))
-             (grey (* 0.8 (+ (* 0.3 (car clear-sky)) (* 0.59 (cadr clear-sky))
-                             (* 0.11 (list-ref clear-sky 2)))))
-             (sky (scale-list (lerp-list clear-sky (list grey grey (* 1.06 grey))
-                                         (* 0.85 overcast))
-                              (- 1.0 (* 0.35 precipitation))))
              (ambient (scale-list
                         (lerp-list (lerp-list AMBIENT-NEW-MOON AMBIENT-FULL-MOON moonlight)
                                    (list 1.0 1.0 1.0)
                                    day)
                         (- 1.0 (* 0.2 overcast))))
+             (cloud-light (if sun-on-clouds?
+                              (scale-list sun-tint (smooth-step -0.2 0.05 height))
+                              moon-color))
+             ;; The underside of thick cloud, as `clouds.frag` shades it, a
+             ;; little paler for the haze: under a full sky the fog and the
+             ;; horizon fade to this, so the distance never glows brighter
+             ;; than the storm clouds over it.
+             (cloud-base (scale-list
+                           (map + (map * (scale-list (map * ambient ambient) 0.45) (list 0.85 0.9 1.0))
+                                (scale-list cloud-light 0.58))
+                           (* 1.15 0.75 (- 1.0 (* 0.25 cover cover)) (- 1.0 (* 0.5 precipitation)))))
+             (sky (lerp-list clear-sky cloud-base (* 0.9 overcast)))
              (sun-dir (path-direction a SUN-TILT))
              ;; The moon's tilt flips over the month, so that it's exactly
              ;; opposite the sun when full and 90 degrees off at the quarters.
@@ -1046,9 +1054,7 @@
               (scale-list sun-color dim)
               overcast
               (if sun-on-clouds? sun-dir moon-dir)
-              (if sun-on-clouds?
-                  (scale-list sun-tint (smooth-step -0.2 0.05 height))
-                  moon-color)
+              cloud-light
               (* (- 1.0 (smooth-step -0.25 -0.03 height))
                  (- 1.0 (* 0.75 moonlight))
                  (- 1.0 overcast)
