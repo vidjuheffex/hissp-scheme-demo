@@ -29,6 +29,7 @@ APP_SCHEME_LIBRARIES = (
     SRC_DIR / "world_terrain.sld",
     SRC_DIR / "world_plants.sld",
     SRC_DIR / "world_weather.sld",
+    SRC_DIR / "world_life.sld",
     SRC_DIR / "world_game.sld",
 )
 

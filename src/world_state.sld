@@ -45,6 +45,7 @@
             (list 'light-dir #f)         ; the shadow light: sun by day, moon at night
             (list 'moon #f)              ; moon disc entity
             (list 'sky #f)               ; (sky clouds precipitation) entities
+            (list 'life #f)              ; fireflies, bats and birds, see `make-life!`
             ;; (cover precipitation snow wetness snow-cover), see (world weather)
             (list 'weather (list 0.0 0.0 0.0 0.0 0.0))
             (list 'weather-override #f)  ; cloud cover forced from the REPL

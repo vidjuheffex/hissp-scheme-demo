@@ -17,6 +17,7 @@
 ;;   (moon-phase)                  day count, phase name, lit fraction
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
+;;   (wildlife)                    how many fireflies, bats and birds are out (0 to 1)
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
 ;;   (biome-here)                  biome weights under the player
@@ -37,18 +38,20 @@
     (only sys argv)
     (only readline read-history-file write-history-file set-history-length)
     (only random randrange)
+    (only array array)
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
     (world state)
     (world terrain)
     (world plants)
     (world weather)
+    (world life)
     (only ursina
           DirectionalLight Entity Mesh Ursina application camera destroy mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
     (only pathlib Path)
-    (only panda3d.core Filename SamplerState TexturePool)
+    (only panda3d.core Filename SamplerState Texture TexturePool)
     (rename (only panda3d.core loadPrcFileData)
             (loadPrcFileData load-prc-file-data)))
   (begin
@@ -576,6 +579,93 @@
         (call-method precipitation 'set-shader-input "wind" (rgb WIND))
         (state-set! 'sky (list sky clouds precipitation))))
 
+    ;; Fireflies, bats and birds (see (world life)): one mesh that follows
+    ;; the camera, and a float texture of the ground heights around the
+    ;; player for the fireflies to hover over. Kept in state as
+    ;; (entity ground-texture sampled filling): `sampled` is where the
+    ;; ground in the texture was sampled, `filling` #f or the grid being
+    ;; sampled next, (x z corner rows-so-far).
+    (define (make-life!)
+      (let* ((data (life-mesh))
+             (mesh (call/kw Mesh (vertices (car data)
+                                  uvs (cadr data)
+                                  colors (list-ref data 2)
+                                  triangles (list-ref data 3))))
+             (life (call/kw Entity (model mesh double_sided #t shader (load-shader "life"))))
+             (ground (Texture "life-ground"))
+             (clamp (attribute-ref SamplerState 'WM_clamp)))
+        (call-method ground 'setup-2d-texture GROUND-SAMPLES GROUND-SAMPLES
+                     (attribute-ref Texture 'T_float) (attribute-ref Texture 'F_r32))
+        (call-method ground 'set-minfilter (attribute-ref SamplerState 'FT_linear))
+        (call-method ground 'set-magfilter (attribute-ref SamplerState 'FT_linear))
+        (call-method ground 'set-wrap-u clamp)
+        (call-method ground 'set-wrap-v clamp)
+        (call-method mesh 'set-transparency #t)
+        (call-method life 'set-depth-write #f)
+        (call-method life 'hide 1)
+        (for-each (lambda (input) (call-method life 'set-shader-input (car input) (cadr input)))
+                  (list (list "box" FIREFLY-BOX)
+                        (list "ground" ground)
+                        (list "ground_size" (* GROUND-SAMPLES GROUND-SPACING))
+                        (list "ground_corner" (make-tuple 0.0 0.0))
+                        (list "fireflies" 0.0)
+                        (list "bats" 0.0)
+                        (list "birds" 0.0)
+                        (list "ambient_color" (make-tuple 1.0 1.0 1.0))))
+        (state-set! 'life (list life ground #f #f))))
+
+    ;; How many of each creature are out where the player stands, now.
+    (define (life-now x z)
+      (let ((weather (state-ref 'weather))
+            (hours (state-ref 'time-of-day)))
+        (life-amounts hours (sin (sun-angle hours)) (car weather) (cadr weather)
+                      (list-ref weather 2) (state-ref 'wind) (biome-weights x z))))
+
+    (define GROUND-ROWS-PER-FRAME 2)
+
+    ;; While fireflies are out, resample the ground under them once the
+    ;; player has moved a few meters, a couple of rows a frame, swapping the
+    ;; new grid in when it's done. And tell the shader how many of each
+    ;; are out.
+    (define (update-life! x z)
+      (let ((life (state-ref 'life))
+            (amounts (life-now x z)))
+        (when life
+          (let ((entity (car life))
+                (texture (cadr life))
+                (sampled (list-ref life 2))
+                (filling (list-ref life 3)))
+            (when (and (> (car amounts) 0.0)
+                       (not filling)
+                       (or (not sampled)
+                           (> (+ (abs (- x (car sampled))) (abs (- z (cadr sampled)))) 6.0)))
+              (set! filling (list x z (ground-corner x z) '())))
+            (when filling
+              (let loop ((k 0) (rows (list-ref filling 3)))
+                (if (and (< k GROUND-ROWS-PER-FRAME) (< (length rows) GROUND-SAMPLES))
+                    (loop (+ k 1)
+                          (cons (ground-row (list-ref filling 2) (length rows)) rows))
+                    (set! filling (list (car filling) (cadr filling) (list-ref filling 2) rows))))
+              (when (= (length (list-ref filling 3)) GROUND-SAMPLES)
+                (let ((corner (list-ref filling 2)))
+                  (call-method texture 'set-ram-image
+                               (call-method (array "f" (apply append (reverse (list-ref filling 3))))
+                                            'tobytes))
+                  (call-method entity 'set-shader-input "ground_corner"
+                               (make-tuple (car corner) (cadr corner)))
+                  (set! sampled (list (car filling) (cadr filling)))
+                  (set! filling #f))))
+            (state-set! 'life (list entity texture sampled filling))
+            (for-each (lambda (name amount) (call-method entity 'set-shader-input name amount))
+                      (list "fireflies" "bats" "birds")
+                      amounts)))))
+
+    ;; REPL: `(wildlife)` => (fireflies bats birds), each 0 to 1.
+    (define (wildlife)
+      (let ((player (state-ref 'player)))
+        (map (lambda (a) (/ (round (* 100.0 a)) 100.0))
+             (life-now (attribute-ref player 'x) (attribute-ref player 'z)))))
+
     (define (sky-position eye dir distance)
       (make-tuple (- (attribute-ref eye 'x) (* (car dir) distance))
                   (- (attribute-ref eye 'y) (* (cadr dir) distance))
@@ -608,7 +698,11 @@
           (when sky
             (for-each (lambda (entity) (attribute-set! entity 'position eye)) sky)
             (call-method (cadr sky) 'set-shader-input "eye" eye)
-            (call-method (list-ref sky 2) 'set-shader-input "eye" eye)))))
+            (call-method (list-ref sky 2) 'set-shader-input "eye" eye)))
+        (let ((life (state-ref 'life)))
+          (when life
+            (attribute-set! (car life) 'position eye)
+            (call-method (car life) 'set-shader-input "eye" eye)))))
 
     ;; --- time of day -----------------------------------------------------
 
@@ -795,7 +889,10 @@
             (set-input! "star_angle" star-angle)
             (set-input! "precipitation" precipitation)
             (set-input! "cloud_light_color" (rgb (list-ref scene 10)))
-            (set-input! "ambient_color" (rgb (list-ref scene 3)))))))
+            (set-input! "ambient_color" (rgb (list-ref scene 3)))
+            (when (state-ref 'life)
+              (call-method (car (state-ref 'life)) 'set-shader-input "ambient_color"
+                           (rgb (list-ref scene 3))))))))
 
     ;; Advance the clock by the real time since the last tick, counting days
     ;; at midnight. Returns the seconds since the last tick.
@@ -996,6 +1093,7 @@
         (dev-poll!)
         (update-weather! x z (advance-time!))
         (apply-time!)
+        (update-life! x z)
         ;; Stick the player to the ground (gravity is off on the controller).
         (attribute-set! player 'y (ground-height x z))
         (follow-sun! x z)
@@ -1058,6 +1156,8 @@
           (attribute-set! (car sky) 'shader (load-shader "sky"))
           (attribute-set! (cadr sky) 'shader (load-shader "clouds" "sky"))
           (attribute-set! (list-ref sky 2) 'shader (load-shader "precip"))))
+      (when (state-ref 'life)
+        (attribute-set! (car (state-ref 'life)) 'shader (load-shader "life")))
       (hash-table-walk (state-ref 'chunks)
                        (lambda (key terrain) (apply-shaders! terrain))))
 
@@ -1097,9 +1197,11 @@
             "shaders/plant.vert" "shaders/plant.frag"
             "shaders/moon.vert" "shaders/moon.frag"
             "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl" "shaders/stars.glsl"
-            "shaders/precip.vert" "shaders/precip.frag"))
+            "shaders/precip.vert" "shaders/precip.frag"
+            "shaders/life.vert" "shaders/life.frag"))
     (define WATCHED-FILES
-      (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_game.sld")
+      (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_life.sld"
+                  "world_game.sld")
               SHADER-FILES))
 
     (define (file-mtime name)
@@ -1141,12 +1243,14 @@
       (let* ((terrain? (member "world_terrain.sld" changed))
              (plants? (or terrain? (member "world_plants.sld" changed)))
              (weather? (or terrain? (member "world_weather.sld" changed)))
+             (life? (or terrain? (member "world_life.sld" changed)))
              (scene? (member "world_game.sld" changed))
              (shaders? (any-member? SHADER-FILES changed)))
-        (when (or plants? weather? scene?)
+        (when (or plants? weather? life? scene?)
           (when terrain? (reload-library! "world_terrain.sld"))
           (when plants? (reload-library! "world_plants.sld"))
           (when weather? (reload-library! "world_weather.sld"))
+          (when life? (reload-library! "world_life.sld"))
           (reload-library! "world_game.sld")
           (apply-scene!)
           (when plants? (regenerate!)))
@@ -1309,6 +1413,7 @@
         (make-sun!)
         (make-moon!)
         (make-sky!)
+        (make-life!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)

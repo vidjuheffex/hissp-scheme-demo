@@ -22,15 +22,16 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
-- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave and tree meshes
+- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree and rock meshes
 - `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow
+- `src/world_life.sld` — `(world life)`: fireflies, bats and birds
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow,
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
-  (phase shading), the sky and clouds, and rain and snow; `clouds.glsl` is
+  (phase shading), the sky and clouds, rain and snow, and wildlife; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
@@ -43,7 +44,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 While the game runs, save a file and it reloads within about half a second:
 
 - `src/world_terrain.sld`, `src/world_plants.sld`, `src/world_weather.sld`,
-  `src/world_game.sld`: the
+  `src/world_life.sld`, `src/world_game.sld`: the
   libraries are re-evaluated in place. Terrain and plant edits also regenerate
   the chunks.
 - `src/shaders/*`: shaders are recompiled and applied to the existing terrain.
@@ -61,6 +62,7 @@ Type Scheme into the terminal that started the game, one form per line:
 (weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover, wind
 (set-weather! 1.0)         ; force the cloud cover: 1 storm, 0 clear; #f to let it run
 (set-wind! 0)              ; force the wind: 0 dead calm, 1 breeze; #f to let it run
+(wildlife)                 ; how many fireflies, bats and birds are out, 0 to 1
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
 (go-to! 500 -200)          ; move the player
@@ -113,6 +115,17 @@ itself. Rain and snow are 12,000 quads in a box
 that follows the camera, moved entirely in `precip.vert`. The weather model
 and its rates are in `src/world_weather.sld`; how weather changes the light is
 in `scene-at` in `src/world_game.sld`.
+
+## Wildlife
+
+Fireflies blink low over grassland from dusk until a couple of hours past
+midnight, and stay down in rain, snow and strong wind. Bats flit overhead in
+the twilight after sunset and before sunrise. By day small flocks of birds
+circle high up, flapping and gliding, fewer under heavy cloud and none in a
+storm. `life-amounts` in `src/world_life.sld` decides how many of each are
+out. They're one mesh that follows the camera, moved entirely in
+`life.vert`; fireflies hover over a coarse grid of ground heights around the
+player, sampled a few rows a frame as you move.
 
 ## Biomes
 
