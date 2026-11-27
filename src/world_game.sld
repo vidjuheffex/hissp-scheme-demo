@@ -576,7 +576,9 @@
 
     ;; What the sky looks like at `hours` with the moon at `phase`. Returns
     ;;   (light-direction light-color sky-color ambient-color
-    ;;    sun-direction moon-direction daylight)
+    ;;    sun-direction moon-direction glare)
+    ;; `glare` (0 to 1) is how much daylight washes out the moon: most with
+    ;; the sun high, less near sunrise and sunset, none at night.
     ;; Directions are the way the light travels (the body sits the opposite
     ;; way). The moon trails the sun around the sky by its phase, as the real
     ;; one does: a full moon is opposite the sun and up all night, a new moon
@@ -611,7 +613,7 @@
               ambient
               sun-dir
               moon-dir
-              day)))
+              (* day (+ 0.4 (* 0.6 (smooth-step 0.0 0.8 height)))))))
 
     (define (current-phase)
       (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
@@ -634,7 +636,7 @@
               (aim-sun!))
             (when moon
               (call-method moon 'set-shader-input "to_sun" (rgb (scale-list sun-dir -1.0)))
-              (call-method moon 'set-shader-input "daylight" (list-ref scene 6)))
+              (call-method moon 'set-shader-input "glare" (list-ref scene 6)))
             (attribute-set! window 'color (rgba sky))
             (set-input! "fog_color" (rgba sky))
             (set-input! "ambient_color" (rgb (list-ref scene 3)))))))
