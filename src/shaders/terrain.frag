@@ -15,6 +15,7 @@ uniform float fog_end;
 uniform float sea_level;
 uniform float shadow_bias;
 
+in vec4 biome;   // r desert, g dry grassland, b snowy; grassland is the rest
 in vec3 world_pos;
 in vec3 world_normal;
 in vec3 view_pos;
@@ -40,6 +41,11 @@ vec3 triplanar(sampler2D tex, vec3 p, vec3 n, float scale) {
     return two_scale(tex, p.zy, scale) * w.x
          + two_scale(tex, p.xz, scale) * w.y
          + two_scale(tex, p.xy, scale) * w.z;
+}
+
+// Pushes a blend weight toward 0 or 1 by `patch`, most strongly at 0.5.
+float patchy(float w, float patch) {
+    return smoothstep(0.3, 0.7, w + patch * 4.0 * w * (1.0 - w));
 }
 
 float sun_shadow() {
@@ -70,11 +76,38 @@ void main() {
     float grain = luma(two_scale(rock_tex, world_pos.xz, 4.0));
     vec3 sand = vec3(0.93, 0.85, 0.64) * (0.75 + 0.5 * grain);
     vec3 seabed = vec3(0.62, 0.58, 0.45) * (0.7 + 0.5 * grain);
-    vec3 snow = vec3(0.94, 0.95, 0.98) * (0.9 + 0.15 * grain);
+    // Darker than white so sunlit snow doesn't clip and keeps its texture.
+    vec3 snow = vec3(0.76, 0.80, 0.87) * (0.85 + 0.25 * grain);
+
+    // Ground cover by biome. Snow and sand come in patches across a border
+    // instead of a flat mix; `patchy` leaves weights of 0 and 1 alone.
+    float patch = (macro - 0.4) * 0.6 + (grain - 0.5) * 0.4;
+    float w_desert = patchy(biome.r, patch);
+    float w_dry = biome.g;
+    float w_snowy = patchy(biome.b, patch);
+    float w_grass = max(1.0 - biome.r - biome.g - biome.b, 0.0);
+    float w_total = w_desert + w_dry + w_snowy + w_grass;
+    if (w_total < 0.001) {
+        w_desert = biome.r;
+        w_snowy = biome.b;
+        w_total = w_desert + w_dry + w_snowy + w_grass;
+    }
+    w_desert /= w_total;
+    w_dry /= w_total;
+    w_snowy /= w_total;
+    w_grass /= w_total;
+    vec3 dry_grass = vec3(0.80, 0.68, 0.38) * (luma(grass) * 2.1 + 0.08);
+    // Wind ripples across the sand, broken up by the rock grain.
+    float ripple = sin(dot(world_pos.xz, vec2(0.8, 0.6)) * 2.6 + grain * 4.0);
+    vec3 desert_sand = vec3(0.90, 0.74, 0.50) * (0.80 + 0.35 * grain + 0.05 * ripple);
+    vec3 ground = grass * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
+    // Desert rock is warmer, like sandstone.
+    rock *= mix(vec3(1.0), vec3(1.18, 0.98, 0.78), w_desert);
 
     float jitter = macro * 2.5;
-    vec3 albedo = grass;
-    albedo = mix(albedo, rock, smoothstep(26.0, 34.0, h + jitter * 2.0));
+    vec3 albedo = ground;
+    // Bare rock band on high ground, except where snow covers it.
+    albedo = mix(albedo, rock, smoothstep(26.0, 34.0, h + jitter * 2.0) * (1.0 - w_snowy));
     albedo = mix(albedo, rock, smoothstep(0.28, 0.45, slope));
     albedo = mix(albedo, sand, 1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h));
     albedo = mix(albedo, seabed, 1.0 - smoothstep(sea_level - 1.5, sea_level, h));

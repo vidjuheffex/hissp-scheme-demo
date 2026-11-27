@@ -21,10 +21,10 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
-- `src/world_terrain.sld` — `(world terrain)`: noise, heights, chunk mesh data
+- `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
-- `src/shaders/` — GLSL for the terrain (grass/rock/sand/snow blending) and water
+- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow) and water
 - `assets/textures/` — tiling grass and rock textures
 - `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
 
@@ -44,12 +44,29 @@ Type Scheme into the terminal that started the game, one form per line:
 (define FOG-END 40.0)      ; then (apply-scene!) to push it
 (set-time-of-day! 18.5)    ; 6:30pm; the clock keeps running
 (set-day-length! 0)        ; freeze the clock (60 = a day per minute)
+(biome-here)               ; biome weights under the player
+(visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
+(go-to! 500 -200)          ; move the player
 (regenerate!)              ; rebuild every chunk
 (reload!)                  ; force-reload everything
 ```
 
 The clock starts at 10:00 and runs a full day in 4 minutes. `scene-at` in
 `src/world_game.sld` holds the sun, sky and ambient colours for each hour.
+
+## Biomes
+
+Grassland, dry grassland, desert and snowy. Two slow noise fields,
+temperature and moisture, decide the biome; deserts need heat as well as
+dryness, so dry grassland usually sits between desert and snow. Each biome
+reshapes the terrain (deserts are low with dunes, snowy ground is taller),
+and the shapes blend across borders. Sizes vary from a few hundred units to
+several kilometres.
+
+The knobs are at the top of the biomes section in `src/world_terrain.sld`:
+`CLIMATE-FREQUENCY` (biome size), `WARP-AMOUNT` (how wiggly borders are),
+the `COLD`/`HOT`/`ARID`/`SEMI-ARID` thresholds (how much of each biome), and
+the per-biome height functions. Saving the file regenerates the world.
 
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.

@@ -14,7 +14,9 @@ uniform struct {
 
 in vec4 p3d_Vertex;
 in vec3 p3d_Normal;
+in vec4 p3d_Color;   // biome weights: r desert, g dry grassland, b snowy
 
+out vec4 biome;
 out vec3 world_pos;
 out vec3 world_normal;
 out vec3 view_pos;
@@ -30,4 +32,5 @@ void main() {
     world_normal = p3d_Normal;
     view_normal = normalize(p3d_NormalMatrix * p3d_Normal);
     shadow_coord = p3d_LightSource[0].shadowViewMatrix * vp;
+    biome = p3d_Color;
 }

@@ -14,6 +14,9 @@
 ;;   (set-input! "fog_end" 80.0)   change a shader uniform immediately
 ;;   (set-time-of-day! 18.5)       set the clock: 0 to 24 hours
 ;;   (set-day-length! 0)           freeze the clock (60 = a day per minute)
+;;   (biome-here)                  biome weights under the player
+;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
+;;   (go-to! 500 -200)             move the player
 ;;   (regenerate!)                 rebuild every chunk, e.g. after terrain edits
 ;;   (reload!)                     force-reload everything
 
@@ -133,6 +136,7 @@
                                 model (call/kw Mesh
                                                (vertices (car data)
                                                 normals (cadr data)
+                                                colors (list-ref data 4)
                                                 triangles triangles))
                                 position (make-tuple ox 0 oz)
                                 shader (state-ref 'terrain-shader)))))
@@ -448,6 +452,54 @@
     ;; runs a day in a minute.
     (define (set-day-length! seconds)
       (state-set! 'day-length seconds))
+
+    ;; --- biomes (REPL helpers) -------------------------------------------
+
+    (define (player-xz)
+      (let ((player (state-ref 'player)))
+        (list (attribute-ref player 'x) (attribute-ref player 'z))))
+
+    ;; Name of the biome with the most weight at (x, z).
+    (define (dominant-biome x z)
+      (let loop ((rest (biome-at x z)) (best #f))
+        (cond ((null? rest) (car best))
+              ((or (not best) (> (cdar rest) (cdr best))) (loop (cdr rest) (car rest)))
+              (else (loop (cdr rest) best)))))
+
+    ;; `(biome-here)`: each biome's share of the ground under the player.
+    (define (biome-here)
+      (apply biome-at (player-xz)))
+
+    ;; `(find-biome "desert")`: the nearest (x z) where that biome dominates,
+    ;; searching rings 64 units apart out to about 4 km, or #f.
+    (define (find-biome name)
+      (let* ((here (player-xz))
+             (px (car here))
+             (pz (cadr here)))
+        (let ring ((r 1))
+          (and (<= r 60)
+               (let ((n (* 8 r)))
+                 (let try ((k 0))
+                   (if (= k n)
+                       (ring (+ r 1))
+                       (let* ((a (/ (* 2.0 PI k) n))
+                              (x (+ px (* 64.0 r (cos a))))
+                              (z (+ pz (* 64.0 r (sin a)))))
+                         (if (equal? (dominant-biome x z) name)
+                             (list x z)
+                             (try (+ k 1)))))))))))
+
+    ;; `(go-to! x z)`: move the player; chunks stream in around the new spot.
+    (define (go-to! x z)
+      (let ((player (state-ref 'player)))
+        (attribute-set! player 'x x)
+        (attribute-set! player 'z z)))
+
+    ;; `(visit-biome! "snowy")`: go to the nearest spot of that biome.
+    (define (visit-biome! name)
+      (let ((spot (find-biome name)))
+        (when spot (go-to! (car spot) (cadr spot)))
+        spot))
 
     ;; --- per-frame update and input --------------------------------------
 
