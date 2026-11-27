@@ -24,7 +24,10 @@
           biome-weights
           biome-at
           chunk-mesh-data
-          chunk-grass)
+          chunk-grass
+          hash2
+          value-noise
+          seed-offset)
   (import (scheme base)
           (scheme inexact)
           (scheme python)
@@ -55,6 +58,10 @@
       (let ((rng (Random seed)))
         (set! SEED-X (call-method rng 'uniform -50000.0 50000.0))
         (set! SEED-Z (call-method rng 'uniform -50000.0 50000.0))))
+
+    ;; The current (SEED-X SEED-Z). Other libraries call this rather than
+    ;; importing the variables, which would keep their values from import time.
+    (define (seed-offset) (list SEED-X SEED-Z))
 
     ;; --- noise -----------------------------------------------------------
 

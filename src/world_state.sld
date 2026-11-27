@@ -50,4 +50,5 @@
             (list 'world-root #f)
             (list 'terrain-shader #f)
             (list 'water-shader #f)
-            (list 'grass-shader #f)))))
+            (list 'grass-shader #f)
+            (list 'plant-shader #f)))))

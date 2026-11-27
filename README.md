@@ -22,10 +22,11 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
+- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo and agave meshes
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow),
-  water, grass clumps (wind, fade-out) and the moon (phase shading)
+  water, grass clumps (wind, fade-out), desert plants and the moon (phase shading)
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
   `grass_clumps.png` and `moon.png`
@@ -36,8 +37,9 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 While the game runs, save a file and it reloads within about half a second:
 
-- `src/world_terrain.sld`, `src/world_game.sld`: the libraries are re-evaluated
-  in place. Terrain edits also regenerate the chunks.
+- `src/world_terrain.sld`, `src/world_plants.sld`, `src/world_game.sld`: the
+  libraries are re-evaluated in place. Terrain and plant edits also regenerate
+  the chunks.
 - `src/shaders/*`: shaders are recompiled and applied to the existing terrain.
 
 Type Scheme into the terminal that started the game, one form per line:
@@ -98,6 +100,29 @@ The knobs are in the grass clumps section of `src/world_terrain.sld`:
 `GRASS-RADIUS` and `GRASS-FADE` are in `src/world_game.sld`, and wind is in
 `src/shaders/grass.vert`. Saving the terrain file regrows the grass along
 with the chunks.
+
+## Desert plants
+
+Deserts grow a Chihuahuan mix: prickly pear (some purple, with magenta
+fruit), barrel cactus (some doubled, with a crown of yellow fruit), cholla,
+ocotillo (leafy or bare, some with red tips) and agave (big blue-grey ones,
+some with a tall flower stalk, and small green lechuguilla). Dry grassland
+gets a sparse scatter of prickly pear, ocotillo and agave. They grow in
+patches, and not on beaches or steep slopes.
+
+They are real 3D meshes, unlike the grass sprites: each species is modeled a
+few ways when the game starts, and every chunk merges turned, scaled and
+tinted copies into one mesh. They are made with the chunk, so they are
+visible as far as the terrain and cast shadows.
+
+The species shapes and colours are the `make-...` functions in
+`src/world_plants.sld`; density and mix are in its placement section
+(`PLANT-SPACING`, `DESERT-PLANT-CHANCE`, `DRY-PLANT-CHANCE`, `PATCHES`,
+`DESERT-MIX`, `DRY-MIX`), and sizes are in `SPECIES`. Saving the file
+regrows them. Surface detail is drawn by `src/shaders/plant.frag` rather
+than textures: areoles on pads, spines on barrels and cholla, thorns on
+ocotillo, waxy agave leaves with dark margins, darkening near the ground and
+a glow when backlit.
 
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.

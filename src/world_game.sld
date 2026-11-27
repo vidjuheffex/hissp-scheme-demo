@@ -37,6 +37,7 @@
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
     (world state)
     (world terrain)
+    (world plants)
     (only ursina
           DirectionalLight Entity Mesh Ursina application camera destroy mouse window)
     (only ursina.prefabs.first_person_controller FirstPersonController)
@@ -204,6 +205,28 @@
             (call-method surface 'set-transparency #t)
             ;; Mask 1 is the shadow camera; water shouldn't shade the seabed.
             (call-method surface 'hide 1)))
+        (let ((plants (list-ref data 5)))
+          (when plants
+            (let ((mesh (call/kw Mesh
+                                 (vertices (car plants)
+                                  normals (cadr plants)
+                                  colors (list-ref plants 2)
+                                  triangles (list-ref plants 3)
+                                  uvs (list-ref plants 4)))))
+              ;; The mesh is on the GPU now. Ursina keeps the source lists,
+              ;; millions of entries across a desert, and Python's full
+              ;; garbage collection pass walks them all: a 40 ms hitch.
+              (attribute-set! mesh 'vertices (vector))
+              (attribute-set! mesh 'normals (vector))
+              (attribute-set! mesh 'colors (vector))
+              (attribute-set! mesh 'triangles (vector))
+              (attribute-set! mesh 'uvs (vector))
+              (call/kw Entity
+                       (parent terrain
+                        name "plants"
+                        model mesh
+                        shader (state-ref 'plant-shader)
+                        double_sided #t)))))
         terrain))
 
     ;; Add the clump mesh from `chunk-grass` to a chunk's terrain entity.
@@ -223,8 +246,12 @@
         (call-method clumps 'hide 1)
         (attribute-set! clumps 'enabled show?)))
 
+    ;; Terrain data with the chunk's plants appended at index 5.
     (define (generate-chunk cx cz pause)
-      (chunk-mesh-data (* cx CHUNK-SIZE) (* cz CHUNK-SIZE) pause))
+      (let* ((ox (* cx CHUNK-SIZE))
+             (oz (* cz CHUNK-SIZE))
+             (data (chunk-mesh-data ox oz pause)))
+        (append data (list (chunk-plants ox oz (car data) (list-ref data 4) pause)))))
 
     ;; `sources` is the chunk's terrain (vertices colors).
     (define (generate-grass cx cz sources pause)
@@ -780,7 +807,7 @@
 
     ;; --- shaders ---------------------------------------------------------
 
-    ;; Terrain, water and grass shaders are compiled from src/shaders/*.
+    ;; Terrain, water, grass and plant shaders are compiled from src/shaders/*.
     ;; Ursina compiles a shader when it is first used, so a fresh `Shader`
     ;; object picks up edits to the GLSL.
     (define (apply-shaders! terrain)
@@ -788,15 +815,17 @@
       (vector-for-each
         (lambda (child)
           (attribute-set! child 'shader
-                          (state-ref (if (equal? (attribute-ref child 'name) "grass")
-                                         'grass-shader
-                                         'water-shader))))
+                          (state-ref (let ((name (attribute-ref child 'name)))
+                                       (cond ((equal? name "grass") 'grass-shader)
+                                             ((equal? name "plants") 'plant-shader)
+                                             (else 'water-shader))))))
         (attribute-ref terrain 'children)))
 
     (define (reload-shaders!)
       (state-set! 'terrain-shader (load-shader "terrain"))
       (state-set! 'water-shader (load-shader "water"))
       (state-set! 'grass-shader (load-shader "grass"))
+      (state-set! 'plant-shader (load-shader "plant"))
       (when (state-ref 'moon)
         (attribute-set! (state-ref 'moon) 'shader (load-shader "moon")))
       (hash-table-walk (state-ref 'chunks)
@@ -835,9 +864,10 @@
       (list "shaders/terrain.vert" "shaders/terrain.frag"
             "shaders/water.vert" "shaders/water.frag"
             "shaders/grass.vert" "shaders/grass.frag"
+            "shaders/plant.vert" "shaders/plant.frag"
             "shaders/moon.vert" "shaders/moon.frag"))
     (define WATCHED-FILES
-      (append (list "world_terrain.sld" "world_game.sld") SHADER-FILES))
+      (append (list "world_terrain.sld" "world_plants.sld" "world_game.sld") SHADER-FILES))
 
     (define (file-mtime name)
       (guard (e (else #f))
@@ -871,18 +901,20 @@
            (or (member (car names) items)
                (any-member? (cdr names) items))))
 
-    ;; The scene copies the terrain's exports when it is imported, so after
-    ;; the terrain changes the scene has to reload too. Reloading the scene
+    ;; Libraries copy their imports' exports when imported, so after the
+    ;; terrain changes the plants and the scene have to reload too. Reloading the scene
     ;; replaces these very functions, so the calls below go to the new code.
     (define (reload-changed! changed)
-      (let ((terrain? (member "world_terrain.sld" changed))
-            (scene? (member "world_game.sld" changed))
-            (shaders? (any-member? SHADER-FILES changed)))
-        (when (or terrain? scene?)
+      (let* ((terrain? (member "world_terrain.sld" changed))
+             (plants? (or terrain? (member "world_plants.sld" changed)))
+             (scene? (member "world_game.sld" changed))
+             (shaders? (any-member? SHADER-FILES changed)))
+        (when (or plants? scene?)
           (when terrain? (reload-library! "world_terrain.sld"))
+          (when plants? (reload-library! "world_plants.sld"))
           (reload-library! "world_game.sld")
           (apply-scene!)
-          (when terrain? (regenerate!)))
+          (when plants? (regenerate!)))
         (when shaders? (reload-shaders!))
         changed))
 
