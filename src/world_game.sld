@@ -14,6 +14,8 @@
 ;;   (set-input! "fog_end" 80.0)   change a shader uniform immediately
 ;;   (set-time-of-day! 18.5)       set the clock: 0 to 24 hours
 ;;   (set-day-length! 0)           freeze the clock (60 = a day per minute)
+;;   (moon-phase)                  day count, phase name, lit fraction
+;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (biome-here)                  biome weights under the player
 ;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
 ;;   (go-to! 500 -200)             move the player
@@ -53,20 +55,28 @@
     ;; height of the sun; see `scene-at`.
     (define SKY-DAY (list 0.62 0.78 0.95))
     (define SKY-DUSK (list 0.95 0.55 0.38))
-    (define SKY-NIGHT (list 0.03 0.04 0.10))
+    (define SKY-NIGHT (list 0.01 0.015 0.04))     ; no moon
+    (define SKY-MOONLIT (list 0.05 0.07 0.15))    ; full moon overhead
     (define SUN-COLOR (list 0.95 0.88 0.75))   ; midday
     (define SUN-WARM (list 1.0 0.6 0.32))      ; near the horizon
-    (define AMBIENT-NIGHT (list 0.45 0.50 0.75))
+    (define AMBIENT-NEW-MOON (list 0.28 0.30 0.45))
+    (define AMBIENT-FULL-MOON (list 0.50 0.56 0.82))
+    ;; Moonlight at full moon is MOON-COLOR times MOON-BRIGHTNESS.
+    (define MOON-COLOR (list 0.55 0.65 0.9))
+    (define MOON-BRIGHTNESS 0.45)
+    ;; Days from new moon to new moon, as for the real moon.
+    (define SYNODIC-MONTH 29.53)
     (define PI 3.141592653589793)
-    ;; The sun's path tilts toward +z, so the direction it travels is
-    ;; (cos a, -sin a, 0.6) / sqrt(1.36) for angle a. This is that norm.
-    (define SUN-TILT-NORM (sqrt 1.36))
+    ;; The sun's path tilts toward +z: its light travels along
+    ;; (cos a, -sin a, SUN-TILT), normalized, for angle a.
+    (define SUN-TILT 0.6)
     ;; Depth tolerance (fraction of the shadow camera's depth range) that
     ;; keeps terrain from shadowing itself in stripes.
     (define SHADOW-BIAS 0.002)
     ;; Side length of the square around the player that receives shadows.
     (define SHADOW-AREA (* CHUNK-SIZE 5))
     (define SUN-DISTANCE 900)
+    (define MOON-DISTANCE 850)
 
     ;; --- assets ----------------------------------------------------------
 
@@ -442,12 +452,13 @@
 
     ;; --- sun -------------------------------------------------------------
 
-    ;; Directional sunlight with shadows, plus a visible sun disc in the sky.
-    ;; The three parts are kept in state as (light bounds disc).
+    ;; One directional light casts shadows: the sun by day, the moon at
+    ;; night. The light, its shadow bounds and the sun disc are kept in state
+    ;; as (light bounds disc); the moon disc is separate.
     ;; `look-at` takes a point, so aim one step from the light along the
-    ;; sun's direction; the light moves with the player.
+    ;; light's direction; the light moves with the player.
     (define (aim-sun!)
-      (let* ((dir (state-ref 'sun-dir))
+      (let* ((dir (state-ref 'light-dir))
              (light (car (state-ref 'sun)))
              (pos (attribute-ref light 'world-position)))
         (call-method light 'look-at
@@ -472,6 +483,25 @@
         ;; Mask 1 is the shadow camera; the disc shouldn't cast a shadow.
         (call-method disc 'hide 1)))
 
+    ;; The moon is a sphere lit from the sun's direction by its shader, so
+    ;; seen from the player it shows the right phase by itself.
+    (define (make-moon!)
+      (let ((moon (call/kw Entity
+                           (model "sphere"
+                            scale 80
+                            shader (load-shader "moon")))))
+        ;; On the model: Ursina gives models "dual" transparency, which
+        ;; would draw the unlit side solid.
+        (call-method (attribute-ref moon 'model) 'set-transparency #t)
+        (call-method moon 'set-shader-input "moon_tex" (load-sprite-texture "moon.png"))
+        (call-method moon 'hide 1)
+        (state-set! 'moon moon)))
+
+    (define (sky-position eye dir distance)
+      (make-tuple (- (attribute-ref eye 'x) (* (car dir) distance))
+                  (- (attribute-ref eye 'y) (* (cadr dir) distance))
+                  (- (attribute-ref eye 'z) (* (list-ref dir 2) distance))))
+
     ;; Keeps the light and disc on the player. Ursina sizes the shadow lens
     ;; assuming the light sits inside the bounds box, so the light moves with
     ;; it. Snapping to chunk centers keeps shadows from shimmering as the
@@ -488,10 +518,13 @@
         (attribute-set! light 'position (make-tuple cx 35 cz))
         (attribute-set! bounds 'position (make-tuple cx 35 cz))
         (call-method light 'update-bounds bounds)
-        (attribute-set! disc 'position
-                        (make-tuple (- (attribute-ref eye 'x) (* (car dir) SUN-DISTANCE))
-                                    (- (attribute-ref eye 'y) (* (cadr dir) SUN-DISTANCE))
-                                    (- (attribute-ref eye 'z) (* (list-ref dir 2) SUN-DISTANCE))))))
+        (attribute-set! disc 'position (sky-position eye dir SUN-DISTANCE))
+        (let ((moon (state-ref 'moon)))
+          (when moon
+            (attribute-set! moon 'position
+                            (sky-position eye (state-ref 'moon-dir) MOON-DISTANCE))
+            ;; Keeps the same face (its +z side) toward the player.
+            (call-method moon 'look-at eye)))))
 
     ;; --- time of day -----------------------------------------------------
 
@@ -523,24 +556,65 @@
     (define (sun-angle hours)
       (* PI (/ (- hours 6.0) 12.0)))
 
-    ;; What the sky looks like at `hours`. Returns
-    ;;   (light-direction sun-color sky-color ambient-color)
-    ;; The light direction is the way the light travels (the sun sits the
-    ;; opposite way). Night is dark blue with no sun, only ambient light.
-    (define (scene-at hours)
+    ;; Direction light travels from a body at `angle` on a path tilted by
+    ;; `tilt` (see SUN-TILT).
+    (define (path-direction angle tilt)
+      (let ((norm (sqrt (+ 1.0 (* tilt tilt)))))
+        (list (/ (cos angle) norm)
+              (/ (- (sin angle)) norm)
+              (/ tilt norm))))
+
+    ;; Moon phase from 0 to 1: 0 new, 0.25 first quarter, 0.5 full,
+    ;; 0.75 last quarter.
+    (define (moon-phase-at day hours)
+      (let ((cycles (/ (+ day (/ hours 24.0)) SYNODIC-MONTH)))
+        (- cycles (floor cycles))))
+
+    ;; Lit fraction of the moon's face for a phase.
+    (define (illumination phase)
+      (* 0.5 (- 1.0 (cos (* 2.0 PI phase)))))
+
+    ;; What the sky looks like at `hours` with the moon at `phase`. Returns
+    ;;   (light-direction light-color sky-color ambient-color
+    ;;    sun-direction moon-direction daylight)
+    ;; Directions are the way the light travels (the body sits the opposite
+    ;; way). The moon trails the sun around the sky by its phase, as the real
+    ;; one does: a full moon is opposite the sun and up all night, a new moon
+    ;; is up with the sun and leaves the night dark. Once the sun is far
+    ;; enough down that sunlight has faded out, the shadow light becomes the
+    ;; moon, so the switch doesn't show.
+    (define (scene-at hours phase)
       (let* ((a (sun-angle hours))
              (height (sin a))                       ; -1 midnight, 1 noon
              (day (smooth-step -0.08 0.12 height))  ; 0 at night, 1 in daylight
              (high (smooth-step 0.0 0.45 height))   ; 0 at the horizon, 1 overhead
-             (dir (list (/ (cos a) SUN-TILT-NORM)
-                        (/ (- (sin a)) SUN-TILT-NORM)
-                        (/ 0.6 SUN-TILT-NORM)))
+             (night (- 1.0 (smooth-step -0.2 -0.08 height)))  ; 1 once the sun is well down
+             (moon-a (- a (* 2.0 PI phase)))
+             (moonlight (* (illumination phase) (smooth-step 0.0 0.15 (sin moon-a))))
              ;; Warm band around the horizon at dawn and dusk.
              (twilight (- 1.0 (smooth-step 0.0 0.3 (abs height))))
              (sun-color (scale-list (lerp-list SUN-WARM SUN-COLOR high) day))
-             (sky (lerp-list (lerp-list SKY-NIGHT SKY-DAY day) SKY-DUSK twilight))
-             (ambient (lerp-list AMBIENT-NIGHT (list 1.0 1.0 1.0) day)))
-        (list dir sun-color sky ambient)))
+             (moon-color (scale-list MOON-COLOR (* MOON-BRIGHTNESS moonlight night)))
+             (night-sky (lerp-list SKY-NIGHT SKY-MOONLIT moonlight))
+             (sky (lerp-list (lerp-list night-sky SKY-DAY day) SKY-DUSK twilight))
+             (ambient (lerp-list (lerp-list AMBIENT-NEW-MOON AMBIENT-FULL-MOON moonlight)
+                                 (list 1.0 1.0 1.0)
+                                 day))
+             (sun-dir (path-direction a SUN-TILT))
+             ;; The moon's tilt flips over the month, so that it's exactly
+             ;; opposite the sun when full and 90 degrees off at the quarters.
+             (moon-dir (path-direction moon-a (* SUN-TILT (cos (* 2.0 PI phase)))))
+             (sun-light? (> height -0.08)))
+        (list (if sun-light? sun-dir moon-dir)
+              (if sun-light? sun-color moon-color)
+              sky
+              ambient
+              sun-dir
+              moon-dir
+              day)))
+
+    (define (current-phase)
+      (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
 
     ;; Light the scene for the current hour. Only does work when the hour has
     ;; changed since the last call.
@@ -548,32 +622,59 @@
       (let ((hours (state-ref 'time-of-day)))
         (unless (equal? hours (state-ref 'applied-time))
           (state-set! 'applied-time hours)
-          (let* ((scene (scene-at hours))
-                 (sun-color (list-ref scene 1))
-                 (sky (list-ref scene 2)))
-            (state-set! 'sun-dir (list-ref scene 0))
+          (let* ((scene (scene-at hours (current-phase)))
+                 (sky (list-ref scene 2))
+                 (sun-dir (list-ref scene 4))
+                 (moon (state-ref 'moon)))
+            (state-set! 'light-dir (car scene))
+            (state-set! 'sun-dir sun-dir)
+            (state-set! 'moon-dir (list-ref scene 5))
             (when (state-ref 'sun)
-              (attribute-set! (car (state-ref 'sun)) 'color (rgba sun-color))
+              (attribute-set! (car (state-ref 'sun)) 'color (rgba (list-ref scene 1)))
               (aim-sun!))
+            (when moon
+              (call-method moon 'set-shader-input "to_sun" (rgb (scale-list sun-dir -1.0)))
+              (call-method moon 'set-shader-input "daylight" (list-ref scene 6)))
             (attribute-set! window 'color (rgba sky))
             (set-input! "fog_color" (rgba sky))
             (set-input! "ambient_color" (rgb (list-ref scene 3)))))))
 
-    ;; Advance the clock by the real time since the last tick.
+    ;; Advance the clock by the real time since the last tick, counting days
+    ;; at midnight.
     (define (advance-time!)
       (let* ((t (now))
              (dt (min 0.25 (- t (state-ref 'last-tick))))
              (day-seconds (state-ref 'day-length)))
         (state-set! 'last-tick t)
         (when (> day-seconds 0.0)
-          (state-set! 'time-of-day
-                      (wrap-hours (+ (state-ref 'time-of-day)
-                                     (* dt (/ 24.0 day-seconds))))))))
+          (let ((hours (+ (state-ref 'time-of-day) (* dt (/ 24.0 day-seconds)))))
+            (when (>= hours 24.0)
+              (state-set! 'day (+ (state-ref 'day) 1)))
+            (state-set! 'time-of-day (wrap-hours hours))))))
 
     ;; REPL: `(set-time-of-day! 18.5)` for 6:30pm. The clock keeps running
     ;; unless the day length is 0.
     (define (set-time-of-day! hours)
       (state-set! 'time-of-day (wrap-hours hours)))
+
+    (define PHASE-NAMES
+      (vector "new moon" "waxing crescent" "first quarter" "waxing gibbous"
+              "full moon" "waning gibbous" "last quarter" "waning crescent"))
+
+    ;; REPL: `(moon-phase)` => (day name lit-fraction), e.g.
+    ;; (10 "waxing gibbous" 0.81).
+    (define (moon-phase)
+      (let ((phase (current-phase)))
+        (list (state-ref 'day)
+              (vector-ref PHASE-NAMES (modulo (exact (round (* phase 8.0))) 8))
+              (/ (round (* 100.0 (illumination phase))) 100.0))))
+
+    ;; REPL: `(set-day! 15)` jumps the moon's cycle: day 0 is a new moon,
+    ;; about 7 first quarter, 15 full, 22 last quarter.
+    (define (set-day! day)
+      (state-set! 'day day)
+      (state-set! 'applied-time #f)
+      (moon-phase))
 
     ;; REPL: `(set-day-length! 0)` freezes the clock, `(set-day-length! 60)`
     ;; runs a day in a minute.
@@ -694,6 +795,8 @@
       (state-set! 'terrain-shader (load-shader "terrain"))
       (state-set! 'water-shader (load-shader "water"))
       (state-set! 'grass-shader (load-shader "grass"))
+      (when (state-ref 'moon)
+        (attribute-set! (state-ref 'moon) 'shader (load-shader "moon")))
       (hash-table-walk (state-ref 'chunks)
                        (lambda (key terrain) (apply-shaders! terrain))))
 
@@ -729,7 +832,8 @@
     (define SHADER-FILES
       (list "shaders/terrain.vert" "shaders/terrain.frag"
             "shaders/water.vert" "shaders/water.frag"
-            "shaders/grass.vert" "shaders/grass.frag"))
+            "shaders/grass.vert" "shaders/grass.frag"
+            "shaders/moon.vert" "shaders/moon.frag"))
     (define WATCHED-FILES
       (append (list "world_terrain.sld" "world_game.sld") SHADER-FILES))
 
@@ -934,6 +1038,7 @@
         (set-input! "rock_tex" (load-tiling-texture "rock.png"))
         (set-input! "clump_tex" (load-sprite-texture "grass_clumps.png"))
         (make-sun!)
+        (make-moon!)
         (state-set! 'last-tick (now))
         (apply-scene!)
 

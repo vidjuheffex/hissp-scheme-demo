@@ -37,9 +37,13 @@
             (list 'last-error "")
             (list 'time-of-day 10.0)     ; hours, 0 <= t < 24
             (list 'day-length 240.0)     ; real seconds per in-game day; 0 freezes
+            (list 'day 10)               ; days since a new moon; +1 each midnight
             (list 'last-tick 0.0)
             (list 'applied-time #f)      ; time the scene was last lit for
-            (list 'sun-dir #f)           ; direction the light travels
+            (list 'sun-dir #f)           ; direction sunlight travels
+            (list 'moon-dir #f)          ; direction moonlight travels
+            (list 'light-dir #f)         ; the shadow light: sun by day, moon at night
+            (list 'moon #f)              ; moon disc entity
             (list 'repl-busy #f)         ; a REPL line is waiting to be evaluated
             (list 'player #f)
             (list 'sun #f)

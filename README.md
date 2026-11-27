@@ -25,10 +25,11 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow),
-  water, and grass clumps (wind, fade-out)
-- `assets/textures/` — tiling grass and rock textures, and the grass clump sprites
-- `tools/make_grass_clumps.py` — one-off generator for `grass_clumps.png`
-  (`uv run --no-project --with pillow --with numpy tools/make_grass_clumps.py`)
+  water, grass clumps (wind, fade-out) and the moon (phase shading)
+- `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
+- `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
+  `grass_clumps.png` and `moon.png`
+  (`uv run --no-project --with pillow --with numpy tools/make_moon.py`)
 - `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
 
 ## Live development
@@ -47,6 +48,8 @@ Type Scheme into the terminal that started the game, one form per line:
 (define FOG-END 40.0)      ; then (apply-scene!) to push it
 (set-time-of-day! 18.5)    ; 6:30pm; the clock keeps running
 (set-day-length! 0)        ; freeze the clock (60 = a day per minute)
+(moon-phase)               ; day count, phase name, lit fraction
+(set-day! 15)              ; jump the moon's cycle (0 new, 7 first quarter, 15 full)
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
 (go-to! 500 -200)          ; move the player
@@ -55,7 +58,17 @@ Type Scheme into the terminal that started the game, one form per line:
 ```
 
 The clock starts at 10:00 and runs a full day in 4 minutes. `scene-at` in
-`src/world_game.sld` holds the sun, sky and ambient colours for each hour.
+`src/world_game.sld` holds the sun, moon, sky and ambient colours for each hour.
+
+The moon goes through real phases, 29.5 in-game days from new moon to new
+moon (about two hours of play), starting on day 10. Like the real moon it
+trails the sun across the sky by its phase: a full moon rises at sunset and
+lights the whole night, a new moon is up by day and leaves the night dark,
+and the quarters are up for half the night. At night the shadow-casting light
+is the moon, so full moons give soft blue shadows. The moonlight, night sky
+and ambient colours (`MOON-COLOR`, `MOON-BRIGHTNESS`, `SKY-MOONLIT`,
+`AMBIENT-NEW-MOON`, `AMBIENT-FULL-MOON`) are at the top of
+`src/world_game.sld`.
 
 ## Biomes
 
