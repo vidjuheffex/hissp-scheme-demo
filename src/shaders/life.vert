@@ -28,6 +28,16 @@ out float glow;
 
 const float PI = 3.14159265;
 
+// The world is cut into POCKET_CELL squares, and about a third of them
+// hold a pocket of fireflies POCKET_RADIUS*2 across somewhere inside.
+const float POCKET_CELL = 16.0;
+const float POCKET_RADIUS = 3.0;
+const float POCKET_CHANCE = 0.35;
+
+float hash(vec2 cell) {
+    return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+}
+
 float ground_at(vec2 xz) {
     return texture(ground, (xz - ground_corner) / ground_size).r;
 }
@@ -67,19 +77,23 @@ void main() {
     glow = 0.0;
     vec3 p;
     if (kind < 0.25) {
-        // Fireflies drift through the world and wrap around inside the
-        // square as it follows the eye, hovering low over the ground and
-        // flashing now and then.
-        vec2 world = p3d_Vertex.xz
-                   + vec2(1.5 * sin(t * 0.30 + r * 40.0), 1.5 * cos(t * 0.27 + s * 40.0))
+        // Fireflies gather in pockets fixed in the world: each wraps around
+        // inside the square as it follows the eye, and the ones that land in
+        // a pocket cell are drawn into its pocket, the rest stay dark. They
+        // hover low over the ground, drifting, and flash now and then.
+        vec2 anchor = eye.xz + mod(p3d_Vertex.xz - eye.xz + 0.5 * box, box) - 0.5 * box;
+        vec2 cell = floor(anchor / POCKET_CELL);
+        float pocket = step(hash(cell), POCKET_CHANCE);
+        vec2 center = (cell + 0.25 + 0.5 * vec2(hash(cell + 17.0), hash(cell + 41.0))) * POCKET_CELL;
+        vec2 world = center + (fract(anchor / POCKET_CELL) - 0.5) * 2.0 * POCKET_RADIUS
+                   + vec2(1.0 * sin(t * 0.30 + r * 40.0), 1.0 * cos(t * 0.27 + s * 40.0))
                    + 0.3 * vec2(sin(t * 1.7 + s * 13.0), cos(t * 1.3 + r * 17.0));
-        vec2 local = mod(world - eye.xz + 0.5 * box, box) - 0.5 * box;
-        world = eye.xz + local;
+        vec2 local = world - eye.xz;
         float y = ground_at(world) + 0.35 + 1.8 * p3d_Vertex.y * p3d_Vertex.y
                 + 0.25 * sin(t * 0.9 + r * 20.0);
         p = vec3(local.x, y - eye.y, local.y);
         float flash = pow(max(sin(t * (0.6 + 0.6 * s) + r * 50.0), 0.0), 4.0);
-        glow = flash * step(r, fireflies) * (1.0 - smoothstep(0.3, 0.5, length(local) / box));
+        glow = flash * pocket * step(r, fireflies) * (1.0 - smoothstep(0.3, 0.5, length(local) / box));
         // A small glow, turned to face the camera.
         vec3 toward = normalize(p + vec3(0.0, 1e-4, 0.0));
         vec3 right = normalize(cross(toward, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));

@@ -29,9 +29,10 @@
     (define FLOCKS 3)
     (define BIRDS-PER-FLOCK 7)
 
-    ;; Fireflies fill a square this many meters across around the camera;
-    ;; the shader wraps them around inside it.
-    (define FIREFLY-BOX 40.0)
+    ;; Fireflies fill a square this many meters across around the camera,
+    ;; as wide as the ground grid; the shader wraps them around inside it
+    ;; and gathers them into pockets.
+    (define FIREFLY-BOX 48.0)
     ;; Ground heights are sampled on a GROUND-SAMPLES square grid this many
     ;; meters apart, centered on the player.
     ;; Sampling is slow (about 0.15 ms a height), so the grid is coarse and
