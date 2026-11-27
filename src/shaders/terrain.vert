@@ -14,7 +14,7 @@ uniform struct {
 
 in vec4 p3d_Vertex;
 in vec3 p3d_Normal;
-in vec4 p3d_Color;   // biome weights: r desert, g dry grassland, b snowy
+in vec4 p3d_Color;   // biome weights: r desert, g dry grassland, b snowy; a woods
 
 out vec4 biome;
 out vec3 world_pos;

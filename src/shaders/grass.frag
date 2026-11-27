@@ -26,7 +26,7 @@ in vec3 tint;
 in vec3 view_pos;
 in vec3 world_pos;
 in vec4 shadow_coord;
-in float flower;   // -1 grass, else which wildflower (0 to 3)
+in float flower;   // -1 grass or fern, else which wildflower (0 to 3)
 in float hue;
 
 out vec4 frag_color;

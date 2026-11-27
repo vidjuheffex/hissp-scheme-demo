@@ -23,13 +23,13 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
-- `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
-- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree and rock meshes
+- `src/world_terrain.sld` — `(world terrain)`: noise, biomes, forests, heights, chunk mesh data
+- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree, undergrowth and rock meshes
 - `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow, wind, wind lines
 - `src/world_life.sld` — `(world life)`: fireflies, bats and birds
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
-- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow,
+- `src/shaders/` — GLSL for the terrain (biome ground cover, forest floor, rock, beaches, snow,
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
@@ -38,12 +38,12 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   the cloud layer, spliced into every shader with `#include "clouds.glsl"` (and
   likewise `stars.glsl` and `mist.glsl`)
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
-- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water), footsteps and thunder, synthesized by
+- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water, woods), owl calls, footsteps and thunder, synthesized by
   `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
-  `grass_clumps.png` (grass and wildflower sprites) and `moon.png`
+  `grass_clumps.png` (grass, wildflower and fern sprites) and `moon.png`
   (`uv run --no-project --with pillow --with numpy tools/make_moon.py`)
 - `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
 
@@ -170,20 +170,30 @@ player, sampled a few rows a frame as you move.
 
 ## Sound
 
-Five seamless ambient loops play all the time, each faded (over a few
+Six seamless ambient loops play all the time, each faded (over a few
 seconds) toward a volume set by what's around you:
 
 - **Wind**: a low rush always, gusting and whistling as the wind picks up
 - **Rain**: hiss and patter with the rain (snow falls silently)
 - **Birds**: songbirds by day in dry weather, loudest at the dawn chorus,
-  most in grass and woods, few in the desert or snow
-- **Crickets**: on dry nights, except in the snow; quiet when it's windy
+  most in grassland, few in the desert or snow, and fewer in forest
+- **Crickets**: on dry nights, except in the snow; quiet when it's windy and
+  fewer in forest
+- **Woods**: in forest by day, thrushes and the odd woodpecker drumming, in
+  a long echo
 - **Water**: waves lapping when there's water within about 55 m, louder
   nearer and in the wind. The terrain is checked at points on three rings
   around you, one point a frame.
 
-Footsteps follow the ground underfoot (grass, dirt and sand, rock, snow,
-shallow water), with four variations of each; strides quicken and land harder
+Owls aren't a loop: in forest on still, dry nights an owl now and then calls
+once, "hoo … hoo", near or far, about every three minutes at most
+(`OWL-EVERY`), and never over another call.
+
+How wooded it is around you (`forest-here`) is the forest density where you
+stand and 12 m off each way, worked out again every few meters.
+
+Footsteps follow the ground underfoot (grass, dirt, sand and forest floor,
+rock, snow, shallow water), with four variations of each; strides quicken and land harder
 the faster you go.
 
 The loops and footsteps are synthesized, not recorded: `tools/make_sounds.py` shapes noise
@@ -204,11 +214,36 @@ The knobs are at the top of the biomes section in `src/world_terrain.sld`:
 the `COLD`/`HOT`/`ARID`/`SEMI-ARID` thresholds (how much of each biome), and
 the per-biome height functions. Saving the file regenerates the world.
 
+## Forests
+
+Forest isn't a biome of its own: woods grow in grassland and the snow where
+a slow grove noise is high, from open meadow to forest. Moisture (the same
+field that picks biomes) decides what kind: on ordinary ground they're open
+groves, and on wet ground (`WET`) they're bigger, run together and grow
+denser, so the wettest grassland and snow are deep, dark forest. The stand
+density, `woods` in `src/world_terrain.sld` (`GROVES`, `GROVE-FREQUENCY`,
+`WET-GROVES`, `DRY-WOODS`, and none above the tree line or by the sea), is
+worked out per terrain vertex and carried in the chunk's vertex colour alpha,
+so trees, the ground, the grass and sound all agree.
+
+The denser the woods, the more the floor changes:
+
+- **Ground**: the grass gives way to fallen leaves with mossy patches
+  (`src/shaders/terrain.frag`).
+- **Grass**: thins to `FOREST-GRASS` of its share, and ferns grow in patches
+  instead (`FOREST-FLOOR`, `FERN-CHANCE`, `FERNS`).
+- **Undergrowth**: bushes, fallen logs lying across the slope and mossy
+  stumps (`make-bush`, `make-log`, `make-stump` and `UNDERGROWTH-...` in
+  `src/world_plants.sld`). You can't walk through stumps.
+- **Sound**: woodland birds by day and owls at night (see Sound).
+
+`(forest-density x z)` in the REPL shows how wooded a spot is, 0 to 1.
+
 ## Grass clumps
 
 Grassland and dry grassland grow clumps of grass in four kinds: short tufts,
 tall grass with seed heads, tufts with flowers, and dry golden tufts (plus
-the wildflowers, below). They
+the wildflowers, below, and ferns on the forest floor). They
 grow in meadows with bare ground between, and never on beaches, steep slopes,
 the rock band, desert or snow. Clumps are only made for chunks within two of
 the player's chunk, and sink into the ground near the edge of that range.
@@ -265,11 +300,10 @@ a glow when backlit.
 ## Trees
 
 Trees are made the same way as the desert plants, on their own coarser grid
-(`TREE-SPACING`). Grassland grows oak groves with open meadows between them
-(`GROVES`, `GROVE-FREQUENCY`); going up the mountains conifers take over
-(`MOUNTAIN-PINES`) until the tree line (`TREE-LINE`), and the snowy biome is
-all conifer forest, narrow dark spruces and broader pines with bare trunks
-below head height. Dry grassland has scattered junipers and the desert the
+(`TREE-SPACING`). Grassland grows oaks wherever there are woods (see
+Forests); going up the mountains conifers take over (`MOUNTAIN-PINES`) until
+the tree line (`TREE-LINE`), and the snowy biome's woods are conifers,
+narrow dark spruces and broader pines with bare trunks below head height. Dry grassland has scattered junipers and the desert the
 odd low, spreading mesquite. `FOREST-CHANCE`, `JUNIPER-CHANCE` and
 `MESQUITE-CHANCE` set how many.
 

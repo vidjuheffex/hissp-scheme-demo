@@ -8,7 +8,7 @@ end wrap around to the start. The game fades the loops in and out; see
 
     uv run --no-project --with numpy --with soundfile tools/make_sounds.py [names...]
 
-With names (wind, rain, birds, crickets, water, steps, thunder), only those
+With names (wind, rain, birds, crickets, water, woods, owls, steps, thunder), only those
 are written.
 """
 
@@ -179,6 +179,88 @@ def birds():
     return reverb(out, 1.4, 0.35)
 
 
+def thrush(pitch):
+    """A song thrush's phrase: a flutey motif of a few notes, repeated."""
+    motif = []
+    for _ in range(rng.integers(2, 4)):
+        length = rng.uniform(0.07, 0.16)
+        f0 = pitch * rng.uniform(0.75, 1.3)
+        motif.append((length, f0, f0 * rng.uniform(0.8, 1.25)))
+    notes, t = [], 0.0
+    for _ in range(rng.integers(2, 4)):
+        for length, f0, f1 in motif:
+            m = seconds(length)
+            s = np.linspace(0, 1, m)
+            notes.append((t, tone(f0 + (f1 - f0) * s, hann(m) ** 0.5, (1.0, 0.18, 0.04))))
+            t += length + 0.03
+        t += 0.12
+    return notes
+
+
+def drumming():
+    """A woodpecker drumming: a fast roll of knocks on hollow wood, slowing a little."""
+    out = np.zeros(seconds(1.4))
+    f = rng.uniform(900, 1400)
+    t, rate, loud = 0.0, rng.uniform(16, 22), 1.0
+    while t < 1.1 and loud > 0.2:
+        m = seconds(0.03)
+        s = np.arange(m) / RATE
+        knock = (np.sin(2 * np.pi * f * s) + 0.5 * np.sin(2 * np.pi * f * 2.3 * s)) * np.exp(-s / 0.006)
+        place(out, knock * loud, seconds(t))
+        t += 1.0 / rate
+        rate *= 0.985
+        loud *= 0.96
+    return out
+
+
+def woods():
+    """A wood by day: thrushes, a woodpecker now and then, and leaves
+    stirring overhead, all in a long, soft echo."""
+    n = seconds(60)
+    out = np.zeros(n)
+    for _ in range(4):
+        pitch = rng.uniform(1900, 3000)
+        near = rng.uniform(0.3, 1.0)
+        t = rng.uniform(0, 6)
+        while t < 60:
+            song = np.zeros(seconds(5))
+            for start, note in thrush(pitch):
+                place(song, note, seconds(start))
+            if near < 0.6:
+                song = lowpass(song, 2500 + 4000 * near)
+            place(out, song * near ** 1.5, seconds(t))
+            t += rng.uniform(3, 8)
+    for t in rng.uniform(0, 60, 2):
+        place(out, lowpass(drumming(), 3000) * rng.uniform(0.3, 0.6), seconds(t))
+    out += shaped_noise(n, 1200, 7000, -0.5) * 0.012 * (0.3 + 0.7 * swell(n, 0.25) ** 2)
+    return reverb(out, 2.2, 0.5)
+
+
+def hoo(pitch, length):
+    """One soft, round owl hoot: a breathy onset, a little scoop up in pitch,
+    then a gentle fall as it dies away."""
+    m = seconds(length)
+    s = np.linspace(0, 1, m)
+    t = np.arange(m) / RATE
+    f = pitch * (0.93 + 0.09 * np.sin(np.pi * np.minimum(s * 2.5, 1.0) / 2) - 0.05 * s ** 2)
+    env = np.clip(t / 0.06, 0, 1) ** 2 * np.clip((m - np.arange(m)) / (0.45 * m), 0, 1) ** 1.5
+    voice = tone(f, env, (1.0, 0.22, 0.05))
+    breath = shaped_noise(m, pitch * 0.8, pitch * 3, -0.8) * env * (0.03 + 0.1 * np.exp(-t / 0.04))
+    return voice + breath
+
+
+def owl(near):
+    """An owl's call, played now and then by the game: Hoo ... Hoo."""
+    out = np.zeros(seconds(5.0))
+    pitch = rng.uniform(330, 370) * (1.0 if near else 0.9)
+    place(out, hoo(pitch, 0.5), 0)
+    place(out, hoo(pitch * 0.98, 0.6), seconds(0.5 + rng.uniform(0.9, 1.2)))
+    out = lowpass(out, 1800 if near else 900)
+    out = reverb(out, 2.4, 0.4 if near else 0.7)
+    out *= np.clip((len(out) - np.arange(len(out))) / seconds(1.0), 0, 1)
+    return out
+
+
 def crickets():
     n = seconds(30)
     out = np.zeros(n)
@@ -239,9 +321,27 @@ def grains(out, count, start, spread, lo, hi, gain):
         place(out, shaped_noise(m + 64, lo, hi)[:m] * burst(m, 0.0003, 0.0008) * gain * rng.lognormal(0, 0.5), at)
 
 
+def bubble(f0, rise):
+    """A ringing air bubble, the sound of water (van den Doel's model): a sine
+    at `f0` Hz dying away, smaller bubbles higher and quicker, gliding up in
+    pitch by `rise` times the decay rate."""
+    decay = 0.13 * f0 + 0.0072 * f0 ** 1.5
+    t = np.arange(seconds(5.0 / decay)) / RATE
+    return tone(f0 * (1 + rise * decay * t), np.exp(-decay * t) * np.clip(t / 0.0005, 0, 1), (1.0,))
+
+
+def bubbles(out, count, start, spread, lo, hi, rise, gain):
+    """`count` bubbles between `lo` and `hi` Hz, mostly early in the `spread`
+    seconds from `start`; the bigger, lower ones louder."""
+    for _ in range(count):
+        f0 = np.exp(rng.uniform(np.log(lo), np.log(hi)))
+        loud = gain * rng.lognormal(0, 0.5) * (f0 / 1000.0) ** -0.4
+        place(out, bubble(f0, rise * rng.uniform(0.5, 1.5)) * loud, seconds(start + spread * rng.beta(1.2, 3.0)))
+
+
 def footstep(surface):
     """One step, heel then toe, on `surface`."""
-    out = np.zeros(seconds(0.45))
+    out = np.zeros(seconds(0.8 if surface == "water" else 0.45))
     toe = rng.uniform(0.05, 0.085)
     for at, gain in ((0.0, 1.0), (toe, rng.uniform(0.5, 0.8))):
         if surface == "grass":
@@ -255,32 +355,33 @@ def footstep(surface):
                                + shaped_noise(m, 400, 3000) * burst(m, 0.006, 0.05) * 0.25), seconds(at))
             grains(out, int(30 * gain), at, 0.12, 1500, 7000, 0.6)
         elif surface == "rock":
-            m = seconds(0.15)
-            f = rng.uniform(220, 420)
-            t = np.arange(m) / RATE
-            knock = (np.sin(2 * np.pi * f * t) + 0.4 * np.sin(2 * np.pi * f * 2.7 * t)) * np.exp(-t / 0.025)
-            place(out, gain * (knock * 0.7
-                               + shaped_noise(m, 2000, 9000) * burst(m, 0.0005, 0.006)
-                               + shaped_noise(m, 800, 4000) * burst(m, 0.01, 0.04) * 0.12), seconds(at))
+            # A dull, unpitched thud: solid stone doesn't ring, so no tones.
+            m = seconds(0.2)
+            place(out, gain * (shaped_noise(m, 55, 280, -0.4) * burst(m, 0.001, 0.022)
+                               + shaped_noise(m, 250, 1400, -0.6) * burst(m, 0.0008, 0.01) * 0.45
+                               + shaped_noise(m, 900, 4500, -0.5) * burst(m, 0.008, 0.045) * 0.07), seconds(at))
+            grains(out, int(8 * gain), at + 0.005, 0.06, 1800, 5000, 0.25)
         elif surface == "snow":
             m = seconds(0.3)
             place(out, gain * shaped_noise(m, 40, 200) * burst(m, 0.01, 0.05) * 0.7, seconds(at))
             grains(out, int(110 * gain), at, 0.2, 900, 5000, 0.5)
-        else:  # water
-            m = seconds(0.4)
-            place(out, gain * (shaped_noise(m, 300, 5000, -0.3) * burst(m, 0.015, 0.14)
-                               + shaped_noise(m, 90, 500) * burst(m, 0.02, 0.1) * 0.6), seconds(at))
-            for _ in range(int(5 * gain)):  # drops falling back
-                d = seconds(rng.uniform(0.03, 0.07))
-                t = np.arange(d) / RATE
-                f = rng.uniform(600, 1800) * (1 + 1.5 * t / t[-1])
-                place(out, tone(f, np.exp(-t / 0.015), (1.0,)) * 0.15, seconds(at + rng.uniform(0.06, 0.3)))
+        elif at == 0.0:  # water: the foot plunging in, the leg pulled out, then drips
+            m = seconds(0.3)
+            place(out, shaped_noise(m, 1500, 12000, -0.2) * burst(m, 0.002, 0.045) * 0.45, 0)  # spray
+            place(out, lowpass(shaped_noise(m, 150, 1500, -0.8) * burst(m, 0.015, 0.05), 1200) * 0.2, 0)
+            bubbles(out, 160, 0.0, 0.1, 600, 6000, 0.12, 0.25)
+            bubbles(out, 3, 0.01, 0.06, 250, 500, 0.3, 0.25)  # gloops
+            lift = rng.uniform(0.18, 0.26)
+            place(out, shaped_noise(m, 2000, 12000, -0.2) * burst(m, 0.004, 0.04) * 0.25, seconds(lift))
+            bubbles(out, 70, lift, 0.1, 700, 5000, 0.15, 0.18)
+            bubbles(out, 30, 0.06, 0.35, 2500, 7000, 0.2, 0.12)  # droplets pattering back
+            bubbles(out, 8, lift + 0.08, 0.35, 1200, 3500, 0.3, 0.15)  # drips plinking back
     fade = np.ones(len(out))
     fade[-seconds(0.05):] = np.linspace(1, 0, seconds(0.05))
     return out * fade
 
 
-FOOTSTEP_LOUDNESS = {"grass": 0.5, "dirt": 0.65, "rock": 0.6, "snow": 0.55, "water": 0.7}
+FOOTSTEP_LOUDNESS = {"grass": 0.5, "dirt": 0.65, "rock": 0.7, "snow": 0.55, "water": 0.7}
 
 
 def thunder(near):
@@ -322,6 +423,8 @@ if __name__ == "__main__":
     make("birds", lambda: save("birds", birds()))
     make("crickets", lambda: save("crickets", crickets()))
     make("water", lambda: save("water", water()))
+    make("woods", lambda: save("woods", woods()))
+    make("owls", lambda: [save(f"owl-{k}", owl(k == 1), 0.8) for k in (1, 2)])
     make("steps", lambda: [save(f"steps/{surface}-{k}", footstep(surface), loudness)
                            for surface, loudness in FOOTSTEP_LOUDNESS.items() for k in range(1, 5)])
     make("thunder", lambda: [save(f"thunder-{kind}-{k}", thunder(kind == "near"), 0.9)

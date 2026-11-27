@@ -1,8 +1,9 @@
 ;; Desert plants, Chihuahuan style: prickly pear, barrel cactus and cholla,
 ;; plus ocotillo and agave. And trees: oak groves in grassland, conifers in
 ;; the snow and up the mountains to the tree line, junipers scattered over
-;; dry grassland and the odd mesquite in the desert. And rocks, in groups
-;; on slopes, shores and high ground.
+;; dry grassland and the odd mesquite in the desert, with bushes, fallen
+;; logs and stumps on the forest floor. And rocks, in groups on slopes,
+;; shores and high ground.
 ;;
 ;; Each species is modeled once per run as a few randomly built 3D variants,
 ;; each pre-turned to several headings (the "templates"). A chunk's plants
@@ -573,6 +574,105 @@
                               (jitter rng foliage 0.06)))
                     clumps))))
 
+    ;; --- forest floor -----------------------------------------------------
+
+    ;; The cut face of a log or stump: rings of pale wood around a dark heart
+    ;; and a rim of `bark`, at `center` facing along `axis`.
+    (define CUT-RINGS (vector 0.0 0.3 0.6 0.88 1.0))
+    (define (cut-face! b center axis radius sides bark)
+      (let* ((side (normalize (cross axis (if (> (abs (y-of axis)) 0.95) (list 1.0 0.0 0.0) UP))))
+             (other (cross axis side))
+             (colors (vector (list 0.50 0.38 0.25) (list 0.74 0.62 0.43) (list 0.62 0.49 0.33)
+                             (list 0.80 0.68 0.48) bark)))
+        (band! b 4 sides
+               (lambda (j i)
+                 ;; Turning this way round faces the triangles along `axis`.
+                 (let* ((theta (* -2.0 PI (/ i sides)))
+                        (r (* radius (vector-ref CUT-RINGS j))))
+                   (list (v+ center (v+ (v* side (* r (cos theta))) (v* other (* r (sin theta)))))
+                         axis
+                         (vector-ref colors j)))))))
+
+    ;; Bark mossy on top, for wood lying on the forest floor.
+    (define (mossy bark moss out)
+      (blend bark moss (* 0.8 (smooth 0.2 0.8 (y-of out)))))
+
+    ;; A fallen log lying along x, sunk a little into the ground, mossy on
+    ;; top, with a broken branch or two.
+    (define (make-log b rng)
+      (let* ((length (call-method rng 'uniform 2.5 5.0))
+             (r (call-method rng 'uniform 0.16 0.28))
+             (bark (jitter rng (list 0.36 0.29 0.22) 0.1))
+             (moss (jitter rng (list 0.30 0.40 0.16) 0.1))
+             (sides 10)
+             (half (* 0.5 length))
+             (bow (call-method rng 'uniform -0.15 0.15))
+             (axis-at (lambda (t) (list (* half t) (* r 0.75) (* bow (- 1.0 (* t t))))))
+             (radius-at (lambda (t) (* r (- 1.0 (* 0.12 (+ t 1.0)))))))
+        (set-material! b MAT-BARK)
+        (band! b 6 sides
+               (lambda (j i)
+                 (let* ((t (- (* 2.0 (/ j 6.0)) 1.0))
+                        (theta (* 2.0 PI (/ i sides)))
+                        (out (list 0.0 (sin theta) (cos theta))))
+                   (list (v+ (axis-at t) (v* out (radius-at t))) out (mossy bark moss out)))))
+        (set-material! b MAT-PLAIN)
+        (cut-face! b (axis-at -1.0) (list -1.0 0.0 0.0) (radius-at -1.0) sides bark)
+        (cut-face! b (axis-at 1.0) (list 1.0 0.0 0.0) (radius-at 1.0) sides bark)
+        (set-material! b MAT-BARK)
+        (do ((k 0 (+ k 1)) (branches (call-method rng 'randint 1 2))) ((= k branches))
+          (let* ((t (call-method rng 'uniform -0.6 0.6))
+                 (from (axis-at t))
+                 (out (normalize (list (call-method rng 'uniform -0.3 0.3) 1.0
+                                       (* (if (even? k) 1.0 -1.0) (call-method rng 'uniform 0.5 1.2))))))
+            (tube! b (list from (v+ from (v* out (call-method rng 'uniform 0.4 0.8))))
+                   (list (* 0.3 r) (* 0.15 r)) 5 (lambda (k) bark))))))
+
+    ;; A stump: a short flared trunk with roots spreading over the ground and
+    ;; a cut top.
+    (define (make-stump b rng)
+      (let* ((height (call-method rng 'uniform 0.3 0.6))
+             (r (call-method rng 'uniform 0.2 0.32))
+             (bark (jitter rng (list 0.36 0.29 0.22) 0.1))
+             (moss (jitter rng (list 0.30 0.40 0.16) 0.1))
+             (sides 10))
+        (set-material! b MAT-BARK)
+        (band! b 3 sides
+               (lambda (j i)
+                 (let* ((theta (* 2.0 PI (/ i sides)))
+                        (out (list (cos theta) 0.0 (sin theta)))
+                        (y (vector-ref (vector -0.2 0.05 (* 0.5 height) height) j))
+                        (radius (* r (vector-ref (vector 1.4 1.3 1.05 1.0) j))))
+                   (list (v+ (v* out radius) (list 0.0 y 0.0)) out
+                         (blend bark moss (* 0.5 (- 1.0 (/ j 3.0))))))))
+        (do ((k 0 (+ k 1))) ((= k 4))
+          (let* ((yaw (+ (* k 1.5708) (call-method rng 'uniform -0.4 0.4)))
+                 (out (list (sin yaw) 0.0 (cos yaw))))
+            (tube! b (list (v+ (v* out (* 0.8 r)) (list 0.0 (* 0.3 height) 0.0))
+                           (v+ (v* out (* 1.5 r)) (list 0.0 0.0 0.0))
+                           (v+ (v* out (* 2.4 r)) (list 0.0 -0.1 0.0)))
+                   (list (* 0.35 r) (* 0.22 r) (* 0.1 r)) 5 (lambda (k) bark))))
+        (set-material! b MAT-PLAIN)
+        (cut-face! b (list 0.0 height 0.0) UP r sides bark)))
+
+    ;; A bush: a few leaf clumps low to the ground.
+    (define (make-bush b rng)
+      (let* ((height (call-method rng 'uniform 0.7 1.3))
+             (foliage (jitter rng (list 0.24 0.40 0.15) 0.12))
+             (heart (list 0.0 (* 0.4 height) 0.0))
+             (count (call-method rng 'randint 4 6))
+             (yaw0 (call-method rng 'uniform 0.0 (* 2.0 PI))))
+        (set-material! b MAT-FOLIAGE)
+        (clump! b rng (list 0.0 (* 0.62 height) 0.0) (* 0.42 height) 0.85 heart
+                (jitter rng foliage 0.06))
+        (do ((k 0 (+ k 1))) ((= k count))
+          (let ((yaw (+ yaw0 (* k 2.39996)))
+                (out (* height (call-method rng 'uniform 0.3 0.5))))
+            (clump! b rng (list (* out (sin yaw)) (* height (call-method rng 'uniform 0.3 0.5))
+                                (* out (cos yaw)))
+                    (* height (call-method rng 'uniform 0.3 0.4)) 0.8 heart
+                    (jitter rng foliage 0.06))))))
+
     ;; --- rocks ------------------------------------------------------------
 
     ;; Rocks: a lumpy ellipsoid about a meter across, chipped flat by a few
@@ -724,9 +824,17 @@
               (list (make-rock SANDSTONE-SLAB) 0.7 2.4 0.15 0.0)))
     (define ROCK-VARIANTS 8)
 
+    ;; Like TREES, for the forest floor: bush, log, stump.
+    (define UNDERGROWTH
+      (vector (list make-bush 0.8 1.3 0.3 0.0)
+              (list make-log 0.85 1.15 0.25 0.0)
+              (list make-stump 0.8 1.25 0.3 0.3)))
+    (define UNDERGROWTH-VARIANTS 8)
+
     (define TEMPLATES (build-templates SPECIES VARIANTS 7))
     (define TREE-TEMPLATES (build-templates TREES TREE-VARIANTS 11))
     (define ROCK-TEMPLATES (build-templates ROCKS ROCK-VARIANTS 13))
+    (define UNDERGROWTH-TEMPLATES (build-templates UNDERGROWTH UNDERGROWTH-VARIANTS 17))
 
     ;; --- placement --------------------------------------------------------
 
@@ -743,17 +851,24 @@
     (define DESERT-MIX (list (list 0.26 0) (list 0.40 1) (list 0.56 2) (list 0.70 3) (list 1.0 4)))
     (define DRY-MIX (list (list 0.30 0) (list 0.48 3) (list 1.0 4)))
 
-    (define TREE-SPACING 6.4)
-    (define FOREST-CHANCE 0.6)         ; per spot, mid-grove, in grassland or snow
-    (define JUNIPER-CHANCE 0.15)       ; per spot, in full dry grassland
-    (define MESQUITE-CHANCE 0.03)      ; per spot, in full desert
-    (define GROVE-FREQUENCY (/ 1.0 90.0))
-    (define GROVES (list 0.35 0.65))   ; grove noise ramp from meadow to forest
+    (define TREE-SPACING 5.0)
+    (define FOREST-CHANCE 0.95)        ; per spot, in the densest wet forest (see `woods`)
+    (define JUNIPER-CHANCE 0.09)       ; per spot, in full dry grassland
+    (define MESQUITE-CHANCE 0.018)      ; per spot, in full desert
     (define MOUNTAIN-PINES (list 17.0 24.0))  ; heights where conifers replace oaks
     (define TREE-LINE (list 27.0 31.0))
     (define TREE-SHORE 1.5)
     (define TREE-MAX-GRADIENT 0.7)
     (define TREE-SPOTS-PER-SIDE (exact (round (/ CHUNK-SIZE TREE-SPACING))))
+
+    ;; Bushes, fallen logs and stumps under the trees, by how wooded the
+    ;; ground is (`woods`) from FOREST-FLOOR's start to its end.
+    (define UNDERGROWTH-SPACING 4.0)
+    (define UNDERGROWTH-CHANCE 0.4)    ; per spot, on the forest floor
+    (define FOREST-FLOOR (list 0.25 0.7))
+    (define UNDERGROWTH-MIX (list 0.6 0.22 0.18))  ; bush, log, stump
+    (define LOG-MAX-GRADIENT 0.5)      ; logs lie across slopes up to this steep
+    (define UNDERGROWTH-SPOTS-PER-SIDE (exact (round (/ CHUNK-SIZE UNDERGROWTH-SPACING))))
 
     (define ROCK-SPACING 4.0)
     (define ROCK-CHANCE 0.02)          ; per spot, anywhere
@@ -812,6 +927,19 @@
               (/ (max (abs (- hb ha)) (abs (- hc ha)) (abs (- hd hb)) (abs (- hd hc)))
                  CELL))))
 
+    ;; Which of the HEADINGS turns a log (lying along x) so it lies across
+    ;; the slope at grid position (fx fz), as a fraction for `add!`'s heading
+    ;; random number.
+    (define (across-slope terrain fx fz)
+      (let* ((a (+ 1 (* 3 (+ (exact (floor fx)) (* (exact (floor fz)) VERTS)))))
+             (dx (- (vector-ref terrain (+ a 3)) (vector-ref terrain a)))
+             (dz (- (vector-ref terrain (+ a (* 3 VERTS))) (vector-ref terrain a)))
+             ;; A turn by `angle` lays the log along (cos angle, -sin angle),
+             ;; which should be along the contour, (-dz, dx).
+             (angle (atan (- dx) (- dz)))
+             (k (modulo (exact (round (/ angle (/ (* 2.0 PI) HEADINGS)))) HEADINGS)))
+        (/ (+ k 0.5) HEADINGS)))
+
     ;; Plant mesh data for the chunk at world (ox, oz), from the terrain
     ;; vertices and biome colors `chunk-mesh-data` made for it. Returns
     ;; (vertices normals colors triangles uvs trunks), or #f if nothing
@@ -845,7 +973,7 @@
             scale))
         ;; Visit a grid of spots `spacing` apart, `side` to a side, calling
         ;; `grow` with the spot's random numbers, its chunk position, its
-        ;; ground and the biome weights there.
+        ;; ground, the biome weights there and how wooded it is.
         (define (each-spot spacing side salt grow)
           (let ((gi0 (exact (floor (/ (+ ox (car seed)) spacing))))
                 (gj0 (exact (floor (/ (+ oz (cadr seed)) spacing)))))
@@ -859,13 +987,13 @@
                        (c (* 4 (+ (exact (floor fx)) (* (exact (floor fz)) VERTS)))))
                   (grow rand (* fx CELL) (* fz CELL) (ground terrain fx fz)
                         (vector-ref biomes c) (vector-ref biomes (+ c 1))
-                        (vector-ref biomes (+ c 2)))))
+                        (vector-ref biomes (+ c 2)) (vector-ref biomes (+ c 3)))))
               (pause))))
         (define (noise-at lx lz frequency)
           (value-noise (* (+ ox lx (car seed)) frequency)
                        (* (+ oz lz (cadr seed)) frequency)))
         (each-spot PLANT-SPACING SPOTS-PER-SIDE 0
-          (lambda (rand lx lz g w-desert w-dry w-snowy)
+          (lambda (rand lx lz g w-desert w-dry w-snowy woods)
             (let ((chance (+ (* DESERT-PLANT-CHANCE w-desert) (* DRY-PLANT-CHANCE w-dry)))
                   (h (car g)))
               (when (and (> chance 0.0)
@@ -879,11 +1007,11 @@
                             (rand 3))
                       rand lx h (cadr g) lz)))))
         (each-spot TREE-SPACING TREE-SPOTS-PER-SIDE 50
-          (lambda (rand lx lz g w-desert w-dry w-snowy)
+          (lambda (rand lx lz g w-desert w-dry w-snowy woods)
             (let* ((h (car g))
                    (w-grass (max 0.0 (- 1.0 w-desert w-dry w-snowy)))
                    (mountain (ramp MOUNTAIN-PINES h))
-                   (forest (* FOREST-CHANCE (ramp GROVES (noise-at lx lz GROVE-FREQUENCY))))
+                   (forest (* FOREST-CHANCE woods))
                    ;; By TREES index: conifer, oak, juniper, mesquite.
                    (weights (list (* forest (+ w-snowy (* w-grass mountain)))
                                   (* forest w-grass (- 1.0 mountain))
@@ -899,8 +1027,30 @@
                   (set! trunks (cons (list (+ ox lx) (+ oz lz)
                                            (* scale (list-ref (vector-ref TREES kind) 4)))
                                      trunks)))))))
+        (each-spot UNDERGROWTH-SPACING UNDERGROWTH-SPOTS-PER-SIDE 130
+          (lambda (rand lx lz g w-desert w-dry w-snowy woods)
+            (let ((h (car g))
+                  (chance (* UNDERGROWTH-CHANCE (ramp FOREST-FLOOR woods)
+                             (max 0.0 (- 1.0 w-desert w-dry)))))
+              (when (and (> chance 0.0)
+                         (> h (+ SEA-LEVEL TREE-SHORE))
+                         (< (cadr g) TREE-MAX-GRADIENT)
+                         (< (rand 0) chance))
+                (let* ((mix (if (< (cadr g) LOG-MAX-GRADIENT)
+                                UNDERGROWTH-MIX
+                                (list (car UNDERGROWTH-MIX) 0.0 (list-ref UNDERGROWTH-MIX 2))))
+                       (kind (pick-weighted mix (rand 3)))
+                       (turned (if (= kind 1)
+                                   (let ((heading (across-slope terrain (/ lx CELL) (/ lz CELL))))
+                                     (lambda (k) (if (= k 7) heading (rand k))))
+                                   rand))
+                       (scale (add! UNDERGROWTH UNDERGROWTH-TEMPLATES UNDERGROWTH-VARIANTS
+                                    kind turned lx h (cadr g) lz))
+                       (blocks (* scale (list-ref (vector-ref UNDERGROWTH kind) 4))))
+                  (when (> blocks 0.0)
+                    (set! trunks (cons (list (+ ox lx) (+ oz lz) blocks) trunks))))))))
         (each-spot ROCK-SPACING ROCK-SPOTS-PER-SIDE 90
-          (lambda (rand lx lz g w-desert w-dry w-snowy)
+          (lambda (rand lx lz g w-desert w-dry w-snowy woods)
             (let* ((h (car g))
                    (shore (- 1.0 (smooth 0.0 SHORE-BAND (abs (- h SEA-LEVEL 0.3)))))
                    ;; Few in the snow, where bare rocks look dropped on top.

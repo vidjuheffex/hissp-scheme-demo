@@ -708,7 +708,7 @@
     ;; Looping ambience from assets/sounds (see tools/make_sounds.py), each
     ;; faded toward a volume set by the wind, the rain, the hour, the biome
     ;; and how near the water is.
-    (define SOUNDS (list "wind" "rain" "birds" "crickets" "water"))
+    (define SOUNDS (list "wind" "rain" "birds" "crickets" "water" "woods"))
 
     ;; Seconds for a loop to get most of the way to a new volume.
     (define SOUND-FADE 4.0)
@@ -745,7 +745,26 @@
             (expt (- 1.0 (/ r WATER-EARSHOT)) 1.5)
             0.0)))
 
+    ;; How wooded it is around (x, z), 0 to 1: the forest density there and
+    ;; at four points `FOREST-EARSHOT` meters off, worked out again only once
+    ;; the player has moved a few meters.
+    (define FOREST-EARSHOT 12.0)
+    (define (forest-here x z)
+      (let ((last (state-ref 'forest-here)))
+        (if (and last (< (+ (square (- x (car last))) (square (- z (cadr last)))) 16.0))
+            (list-ref last 2)
+            (let ((f (/ (+ (* 2.0 (forest-density x z))
+                           (forest-density (+ x FOREST-EARSHOT) z)
+                           (forest-density (- x FOREST-EARSHOT) z)
+                           (forest-density x (+ z FOREST-EARSHOT))
+                           (forest-density x (- z FOREST-EARSHOT)))
+                        6.0)))
+              (state-set! 'forest-here (list x z f))
+              f))))
+
     ;; Target volumes, in `SOUNDS` order, at (x, z) with water `near` (0 to 1).
+    ;; In the woods, open-country birds and crickets give way to woodland
+    ;; birds by day (and the odd owl at night, see `update-owls!`).
     (define (sound-levels x z near)
       (let* ((weather (state-ref 'weather))
              (hours (state-ref 'time-of-day))
@@ -758,6 +777,7 @@
              (dry (cadr weights))
              (snowy (list-ref weights 2))
              (grass (max 0.0 (- 1.0 desert dry snowy)))
+             (forest (smooth-step 0.1 0.55 (forest-here x z)))
              (dry-weather (- 1.0 (smooth-step 0.05 0.3 precipitation)))
              (day (smooth-step -0.05 0.15 height))
              (dark (- 1.0 (smooth-step -0.15 0.02 height)))
@@ -766,11 +786,47 @@
               (* 0.8 precipitation (- 1.0 snow))
               (* day dry-weather (+ grass (* 0.7 dry) (* 0.35 desert) (* 0.25 snowy))
                  (+ 0.55 (* 0.45 morning))
-                 (- 1.0 (smooth-step 1.2 2.0 wind)))
+                 (- 1.0 (smooth-step 1.2 2.0 wind))
+                 (- 1.0 (* 0.7 forest)))
               (* 0.7 dark dry-weather (- 1.0 snow)
                  (+ grass (* 0.8 dry) (* 0.5 desert))
-                 (- 1.0 (smooth-step 1.0 1.8 wind)))
-              (* 0.8 near (+ 0.35 (* 0.65 (clamp01 (/ wind 1.2))))))))
+                 (- 1.0 (smooth-step 1.0 1.8 wind))
+                 (- 1.0 (* 0.6 forest)))
+              (* 0.8 near (+ 0.35 (* 0.65 (clamp01 (/ wind 1.2)))))
+              (* 0.9 day dry-weather forest
+                 (+ 0.55 (* 0.45 morning))
+                 (- 1.0 (smooth-step 1.2 2.0 wind))))))
+
+    ;; Owls call now and then in the woods on still, dry nights: on average
+    ;; once every `OWL-EVERY` seconds deep in the forest, never by day.
+    (define OWL-EVERY 180.0)
+
+    (define (make-owls!)
+      (state-set! 'owls
+                  (map (lambda (k)
+                         (call/kw Audio
+                                  (sound_file_name (Path (asset-path "assets" "sounds"
+                                                                     (string-append "owl-" k ".ogg")))
+                                   autoplay #f
+                                   auto_destroy #f
+                                   group "ambient")))
+                       (list "1" "2"))))
+
+    (define (update-owls! x z dt)
+      (let* ((owls (state-ref 'owls))
+             (weather (state-ref 'weather))
+             (height (sin (sun-angle (state-ref 'time-of-day))))
+             (likely (* (- 1.0 (smooth-step -0.2 -0.05 height))
+                        (- 1.0 (smooth-step 0.05 0.3 (cadr weather)))
+                        (- 1.0 (smooth-step 0.8 1.5 (state-ref 'wind)))
+                        (smooth-step 0.1 0.55 (forest-here x z)))))
+        (when (and owls
+                   (null? (filter (lambda (audio) (= (attribute-ref audio 'playing) 1)) owls))
+                   (< (random) (/ (* dt likely) OWL-EVERY)))
+          (let ((audio (list-ref owls (randrange 2))))
+            (attribute-set! audio 'volume (+ 0.35 (* 0.2 (random))))
+            (attribute-set! audio 'pitch (+ 0.95 (* 0.1 (random))))
+            (call-method audio 'play)))))
 
     ;; Listens for water at one more ring point, and fades every loop
     ;; toward its level over `dt` seconds.
@@ -1593,16 +1649,17 @@
                         (> (* snow-cover snowy) 0.3)))
                "snow")
               ((or (> slope 0.36) (and (> h 30.0) (< snowy 0.5))) "rock")
-              ((or (< h (+ SEA-LEVEL 1.1)) (> desert 0.5)) "dirt")
+              ((or (< h (+ SEA-LEVEL 1.1)) (> desert 0.5) (> (forest-density x z) 0.5)) "dirt")
               (else "grass"))))
 
     ;; Sets the walking speed, and plays a footstep each stride: strides
-    ;; come quicker the faster the player goes, and land harder.
+    ;; come quicker the faster the player goes, and land harder. Splashes
+    ;; get louder and deeper the deeper the player wades.
     (define (update-walking! player x z h dt)
-      (let ((wading (clamp01 (/ (- SEA-LEVEL h) WADE-DEPTH))))
-        (attribute-set! player 'speed
-                        (* (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED)
-                           (- 1.0 (* (- 1.0 WADE-SLOWEST) wading)))))
+      (define wading (clamp01 (/ (- SEA-LEVEL h) WADE-DEPTH)))
+      (attribute-set! player 'speed
+                      (* (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED)
+                         (- 1.0 (* (- 1.0 WADE-SLOWEST) wading))))
       (let ((steps (state-ref 'footsteps)))
         (when (and steps (> dt 0.0))
           (let* ((was (list-ref steps 2))
@@ -1616,8 +1673,8 @@
               (let* ((variants (list-ref (car steps)
                                          (list-index-of SURFACES (surface-at x z h))))
                      (audio (list-ref variants (randrange STEP-VARIANTS))))
-                (attribute-set! audio 'volume (min 0.9 (+ 0.3 (* 0.05 speed))))
-                (attribute-set! audio 'pitch (+ 0.92 (* 0.16 (random))))
+                (attribute-set! audio 'volume (min 0.9 (+ 0.3 (* 0.05 speed) (* 0.35 wading))))
+                (attribute-set! audio 'pitch (- (+ 0.92 (* 0.16 (random))) (* 0.08 wading)))
                 (call-method audio 'play)))
             (state-set! 'footsteps (list (car steps) phase (list x z)))))))
 
@@ -1642,6 +1699,7 @@
           (apply-time!)
           (update-life! x z)
           (update-sounds! x z dt)
+          (update-owls! x z dt)
           (update-mist! x z dt)
           (update-storm! dt)
           (update-walking! player x z bottom dt))
@@ -1719,6 +1777,8 @@
           (attribute-set! (list-ref sky 2) 'shader (load-shader "precip"))))
       (when (state-ref 'life)
         (attribute-set! (car (state-ref 'life)) 'shader (load-shader "life")))
+      (when (state-ref 'wind-lines)
+        (attribute-set! (state-ref 'wind-lines) 'shader (load-shader "wind")))
       (hash-table-walk (state-ref 'chunks)
                        (lambda (key terrain) (apply-shaders! terrain))))
 
@@ -1982,6 +2042,7 @@
         (make-sounds!)
         (make-footsteps!)
         (make-thunder!)
+        (make-owls!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)

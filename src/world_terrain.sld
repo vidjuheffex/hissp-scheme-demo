@@ -11,7 +11,8 @@
 ;; Biomes (grassland, dry grassland, desert, snowy) come from two slow noise
 ;; fields, temperature and moisture. Each biome reshapes the same terrain
 ;; noise, and the shapes are blended by biome weight so borders are smooth.
-;; Chunks carry the weights in their vertex colors for the shader.
+;; Chunks carry the weights in their vertex colors for the shader, and how
+;; wooded the ground is in their alpha (see forests below).
 
 (define-library (world terrain)
   (export CHUNK-SIZE
@@ -23,6 +24,7 @@
           climate
           biome-weights
           biome-at
+          forest-density
           chunk-mesh-data
           chunk-grass
           hash2
@@ -108,7 +110,8 @@
     ;; makes one big biome; a brief dip makes a small one.
     ;;
     ;; Weights are (desert dry-grassland snowy). Grassland is whatever is left,
-    ;; so the four always sum to 1.
+    ;; so the four always sum to 1. A fourth value, wet (0 to 1), isn't a
+    ;; biome: it's how damp the ground is, and grows denser forests.
 
     (define CLIMATE-FREQUENCY (/ 1.0 1000.0)) ; lower -> bigger biomes
     (define WARP-FREQUENCY (/ 1.0 400.0))
@@ -122,6 +125,7 @@
     (define HOT (list 0.50 0.56))        ; deserts need at least this much heat
     (define ARID (list 0.40 0.46))       ; drier than this -> desert
     (define SEMI-ARID (list 0.47 0.53))  ; drier than this -> dry grassland
+    (define WET (list 0.60 0.75))        ; wetter than this -> denser forest
     ;; Biome weights are computed on a grid this coarse and blended between.
     (define CLIMATE-STEP 16.0)
 
@@ -176,7 +180,7 @@
         (list (fbm (+ cx 113.1) (+ cz 71.9) 3)
               (fbm (+ cx 457.3) (+ cz 291.1) 3))))
 
-    ;; Unblended (desert dry-grassland snowy) weights at one point. Arid
+    ;; Unblended (desert dry-grassland snowy wet) weights at one point. Arid
     ;; ground that isn't hot is dry grassland, which keeps deserts from
     ;; touching snow.
     (define (climate-weights x z)
@@ -189,7 +193,8 @@
              (semi-arid (* (ramp ARID m) (- 1.0 (ramp SEMI-ARID m)))))
         (list (* warm arid hot)
               (* warm (+ (* arid (- 1.0 hot)) semi-arid))
-              (- 1.0 warm))))
+              (- 1.0 warm)
+              (ramp WET m))))
 
     (define (bilerp a b c d u v)
       (let ((top (+ a (* (- b a) u)))
@@ -234,6 +239,38 @@
     ;; Walkable height: terrain, but never below the water surface.
     (define (ground-height x z)
       (max SEA-LEVEL (terrain-height x z)))
+
+    ;; --- forests -----------------------------------------------------------
+    ;;
+    ;; Not a biome: woods grow in grassland and the snow where a slow grove
+    ;; noise is high, from open meadow to forest. Wet ground lowers the bar,
+    ;; so its woods are bigger and run together, and grows them denser.
+    ;; `woods` is that stand density, 0 open ground to 1 the densest wet
+    ;; forest, before the biome: the trees, the forest floor and its grass
+    ;; all scale it by the share of grassland and snow.
+
+    (define GROVE-FREQUENCY (/ 1.0 90.0))
+    (define GROVES (list 0.35 0.65))     ; grove noise ramp from meadow to forest
+    (define WET-GROVES 0.22)             ; wet ground starts the ramp this much lower
+    (define DRY-WOODS 0.4)               ; densest stand where the ground isn't wet
+    (define WOODS-TOP (list 27.0 31.0))  ; the tree line
+    (define WOODS-SHORE (list 1.2 2.0))  ; meters above the sea, from none to full
+
+    (define (woods x z h wet)
+      (let ((shift (* WET-GROVES wet)))
+        (* (ramp (list (- (car GROVES) shift) (- (cadr GROVES) shift))
+                 (value-noise (* (+ x SEED-X) GROVE-FREQUENCY)
+                              (* (+ z SEED-Z) GROVE-FREQUENCY)))
+           (+ DRY-WOODS (* (- 1.0 DRY-WOODS) wet))
+           (- 1.0 (ramp WOODS-TOP h))
+           (ramp (list (+ SEA-LEVEL (car WOODS-SHORE)) (+ SEA-LEVEL (cadr WOODS-SHORE))) h))))
+
+    ;; REPL: (forest-density x z) -> how wooded the ground is, 0 to 1,
+    ;; counting the biome.
+    (define (forest-density x z)
+      (let ((w (biome-weights x z)))
+        (* (woods x z (terrain-height x z) (list-ref w 3))
+           (max 0.0 (- 1.0 (car w) (cadr w))))))
 
     ;; --- fast grid noise ---------------------------------------------------
     ;;
@@ -299,7 +336,7 @@
             (octave (+ o 1) (* freq 2.0) (* amp 0.5))))))
 
     ;; Biome weights for a count x count grid (row-major) whose first sample
-    ;; is world (x0, z0), as three vectors: (desert dry-grassland snowy).
+    ;; is world (x0, z0), as four vectors: (desert dry-grassland snowy wet).
     ;; Climate is evaluated once per CLIMATE-STEP corner and blended, exactly
     ;; like `biome-weights`.
     (define (biome-grid x0 z0 step count)
@@ -311,7 +348,8 @@
              (corners (make-vector (* gw gh) #f))
              (desert (make-vector (* count count) 0.0))
              (dry (make-vector (* count count) 0.0))
-             (snowy (make-vector (* count count) 0.0)))
+             (snowy (make-vector (* count count) 0.0))
+             (wet (make-vector (* count count) 0.0)))
         (do ((j 0 (+ j 1))) ((= j gh))
           (do ((i 0 (+ i 1))) ((= i gw))
             (vector-set! corners (+ i (* j gw))
@@ -322,9 +360,10 @@
             (let ((w (vector-ref corners 0)))
               (vector-fill! desert (car w))
               (vector-fill! dry (cadr w))
-              (vector-fill! snowy (list-ref w 2)))
-            (blend-corners! corners gw gx0 gz0 x0 z0 step count desert dry snowy))
-        (list desert dry snowy)))
+              (vector-fill! snowy (list-ref w 2))
+              (vector-fill! wet (list-ref w 3)))
+            (blend-corners! corners gw gx0 gz0 x0 z0 step count desert dry snowy wet))
+        (list desert dry snowy wet)))
 
     (define (all-equal? v)
       (let ((first (vector-ref v 0)))
@@ -335,7 +374,7 @@
 
     ;; Bilinear blend of the corner weights into each grid sample, one biome
     ;; at a time. A biome with no weight at any corner is just zeros.
-    (define (blend-corners! corners gw gx0 gz0 x0 z0 step count desert dry snowy)
+    (define (blend-corners! corners gw gx0 gz0 x0 z0 step count desert dry snowy wet)
       (let ((cols (make-vector count 0))
             (us (make-vector count 0.0)))
         (do ((i 0 (+ i 1))) ((= i count))
@@ -363,8 +402,8 @@
                                                (vector-ref w (+ k gw 1))
                                                (vector-ref us i)
                                                v)))))))))
-          (list desert dry snowy)
-          (list car cadr (lambda (w) (list-ref w 2))))))
+          (list desert dry snowy wet)
+          (list car cadr (lambda (w) (list-ref w 2)) (lambda (w) (list-ref w 3))))))
 
     ;; --- chunk mesh ------------------------------------------------------
 
@@ -410,7 +449,9 @@
     ;; grass) times a slow "meadow" noise, so grass comes in patches with
     ;; bare ground between. A clump is two crossed quads showing one sprite
     ;; of `assets/textures/grass_clumps.png`: 0 short, 1 tall, 2 flowers,
-    ;; 3 dry, and the wildflowers 4 daisies, 5 spikes, 6 poppies, 7 desert.
+    ;; 3 dry, the wildflowers 4 daisies, 5 spikes, 6 poppies, 7 desert, and
+    ;; 8 ferns. Under the trees (`woods`) grass and wildflowers thin out and
+    ;; ferns grow in patches instead.
     ;;
     ;; Wildflowers come in drifts of their own (`FLOWERS` noise), among the
     ;; grass and, after rain, out in the desert. Which kind a drift is
@@ -430,7 +471,12 @@
     (define CLUMP-SINK 0.15)           ; push bases into the ground on slopes
     (define CLUMPS-PER-SIDE (exact (round (/ CHUNK-SIZE GRASS-SPACING))))
     (define MAX-CLUMPS (* CLUMPS-PER-SIDE CLUMPS-PER-SIDE))
-    (define SPRITES 8.0)
+    (define SPRITES 9.0)
+    (define FOREST-FLOOR (list 0.25 0.7)) ; woods ramp from open ground to forest floor
+    (define FOREST-GRASS 0.15)         ; share of the grass left on the forest floor
+    (define FERN-CHANCE 0.65)          ; on the forest floor, mid-patch
+    (define FERN-FREQUENCY (/ 1.0 14.0))
+    (define FERNS (list 0.35 0.6))     ; fern patch noise ramp from none to thick
     (define FLOWER-FREQUENCY (/ 1.0 18.0))
     (define FLOWERS (list 0.45 0.65))  ; drift noise ramp from none to thick
     (define FLOWER-CHANCE 0.8)         ; in grassland, mid-drift
@@ -456,14 +502,14 @@
             ((< flavor 0.82) 1)
             (else 2)))
 
-    (define SPRITE-HEIGHTS (vector 1.0 1.7 1.25 1.15 0.85 1.15 0.9 0.7))
+    (define SPRITE-HEIGHTS (vector 1.0 1.7 1.25 1.15 0.85 1.15 0.9 0.7 1.15))
 
     ;; Per-sprite color multiplier, so clumps read against the ground
     ;; texture they stand on (the sprites alone are darker than it).
     (define SPRITE-TINTS
       (vector (list 1.1 1.18 0.85) (list 1.0 1.08 0.85) (list 1.08 1.15 1.0)
               (list 1.12 1.1 0.98) (list 1.08 1.15 0.9) (list 1.05 1.12 0.9)
-              (list 1.0 1.08 0.9) (list 1.1 1.08 0.95)))
+              (list 1.0 1.08 0.9) (list 1.1 1.08 0.95) (list 1.0 1.1 0.9)))
 
     ;; Which wildflower a drift grows, from the slow kind noise `k` and the
     ;; share of dry grassland: poppies like it dry.
@@ -527,11 +573,14 @@
                    (c (* 4 (+ ci (* cj VERTS))))
                    (w-desert (vector-ref biomes c))
                    (w-dry (vector-ref biomes (+ c 1)))
-                   (w-grass (- 1.0 w-desert w-dry (vector-ref biomes (+ c 2))))
-                   (lush (+ (* GRASS-CHANCE (max w-grass 0.0)) (* DRY-GRASS-CHANCE w-dry)))
-                   (flowery (+ (* FLOWER-CHANCE (max w-grass 0.0)) (* DRY-FLOWER-CHANCE w-dry)))
+                   (w-grass (max 0.0 (- 1.0 w-desert w-dry (vector-ref biomes (+ c 2)))))
+                   (canopy (ramp FOREST-FLOOR (vector-ref biomes (+ c 3))))
+                   (open (- 1.0 (* (- 1.0 FOREST-GRASS) canopy)))
+                   (lush (+ (* GRASS-CHANCE w-grass open) (* DRY-GRASS-CHANCE w-dry)))
+                   (flowery (+ (* FLOWER-CHANCE w-grass open) (* DRY-FLOWER-CHANCE w-dry)))
+                   (ferny (* FERN-CHANCE w-grass canopy))
                    (desert-flowery (* DESERT-FLOWER-CHANCE w-desert)))
-              (when (> (+ lush desert-flowery) 0.0)
+              (when (> (+ lush desert-flowery ferny) 0.0)
                 (let* ((u (- fx ci))
                        (v (- fz cj))
                        (a (+ 1 (* 3 (+ ci (* cj VERTS)))))
@@ -580,6 +629,27 @@
                                     (scramble r 13.7)
                                     (+ 0.1 (* 0.8 (scramble r 331.7))))
                         (set! count (+ count 1)))
+                  (if (and in-range
+                           (> ferny 0.0)
+                           (< (spot-random gi gj 4)
+                              (* ferny (ramp FERNS (value-noise (* wx FERN-FREQUENCY)
+                                                                (- (* wz FERN-FREQUENCY) 17.7))))))
+                      (let* ((r (spot-random gi gj 2))
+                             (size (+ 0.7 (* 0.6 (scramble r 71.3))))
+                             (half-width (* 0.8 size))
+                             (angle (* 3.14159 (scramble r 157.1)))
+                             (shade (+ 0.8 (* 0.3 (scramble r 331.7))))
+                             (tint (vector-ref SPRITE-TINTS 8)))
+                        (put-clump! mesh count lx
+                                    (- h CLUMP-SINK (* gradient half-width))
+                                    lz
+                                    (* half-width (cos angle))
+                                    (* half-width (sin angle))
+                                    (* size (vector-ref SPRITE-HEIGHTS 8))
+                                    8
+                                    (* shade (car tint)) (* shade (cadr tint)) (* shade (list-ref tint 2))
+                                    0.0 -1.0)
+                        (set! count (+ count 1)))
                   (when (and in-range
                              (< (spot-random gi gj 0)
                                 (* lush
@@ -605,7 +675,7 @@
                                   (* shade (cadr tint) (+ 0.95 (* 0.1 (scramble r 673.3))))
                                   (* shade (list-ref tint 2))
                                   0.0 -1.0)
-                      (set! count (+ count 1)))))))))
+                      (set! count (+ count 1))))))))))
           (pause))
         (and (> count 0)
              (map (lambda (v per-clump) (vector-copy v 0 (* count per-clump)))
@@ -624,7 +694,7 @@
     ;; Blue carries the slope of the ground (rise over run / 2), from which
     ;; it estimates how far the shore is.
     ;; Terrain colors carry the biome weights: red desert, green dry
-    ;; grassland, blue snowy (grassland is the rest).
+    ;; grassland, blue snowy (grassland is the rest); alpha is `woods`.
     ;; The optional `pause` thunk is called periodically during generation.
     (define (chunk-mesh-data ox oz . options)
       (let* ((pause (if (pair? options) (car options) no-pause))
@@ -642,7 +712,8 @@
         (let* ((biomes (biome-grid x0 z0 CELL SAMPLES))
                (desert (car biomes))
                (dry (cadr biomes))
-               (snowy (list-ref biomes 2)))
+               (snowy (list-ref biomes 2))
+               (wet (list-ref biomes 3)))
           (pause)
           (do ((j 0 (+ j 1))) ((= j SAMPLES))
             (let ((z (+ z0 (* j CELL))))
@@ -663,7 +734,10 @@
                     (c (* 4 (+ i (* j VERTS)))))
                 (vector-set! colors c (vector-ref desert s))
                 (vector-set! colors (+ c 1) (vector-ref dry s))
-                (vector-set! colors (+ c 2) (vector-ref snowy s))))))
+                (vector-set! colors (+ c 2) (vector-ref snowy s))
+                (vector-set! colors (+ c 3)
+                             (woods (+ ox (* i CELL)) (+ oz (* j CELL))
+                                    (vector-ref heights s) (vector-ref wet s)))))))
         (do ((j 0 (+ j 1))) ((= j VERTS))
           (let ((above (+ (* (+ j 2) SAMPLES) 1))
                 (here (+ (* (+ j 1) SAMPLES) 1))

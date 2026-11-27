@@ -20,7 +20,7 @@ uniform vec4 bloom;        // how far into bloom: daisies, spikes, poppies, dese
 
 in vec4 p3d_Vertex;
 in vec3 p3d_Normal;        // y: height above the ground (0 at a clump's base);
-                           // x: a wildflower's hue, z: its bloom threshold (-1 grass)
+                           // x: a wildflower's hue, z: its bloom threshold (-1 grass, ferns)
 in vec2 p3d_MultiTexCoord0;
 in vec4 p3d_Color;         // per-clump tint
 
@@ -40,8 +40,8 @@ void main() {
     float dist = length((p3d_ModelViewMatrix * v).xyz);
     float grow = 1.0 - smoothstep(grass_fade.x, grass_fade.y, dist);
     // Wildflowers out of bloom sink away too, each at its own threshold.
-    int sprite = int(p3d_MultiTexCoord0.x * 8.0);
-    flower = sprite >= 4 ? float(sprite - 4) : -1.0;
+    int sprite = int(p3d_MultiTexCoord0.x * 9.0);
+    flower = sprite >= 4 && sprite <= 7 ? float(sprite - 4) : -1.0;
     hue = p3d_Normal.x;
     if (flower >= 0.0) {
         float opens = p3d_Normal.z;

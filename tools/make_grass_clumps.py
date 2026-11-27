@@ -1,9 +1,9 @@
 """Draw the grass clump sprite atlas: assets/textures/grass_clumps.png.
 
-One-off asset tool, not part of the game. Eight 256x256 sprites side by side:
+One-off asset tool, not part of the game. Nine 256x256 sprites side by side:
   0 short green tuft, 1 tall grass with seed heads,
   2 green tuft with flowers, 3 dry golden tuft,
-  4 daisies, 5 flower spikes, 6 poppies, 7 desert annual.
+  4 daisies, 5 flower spikes, 6 poppies, 7 desert annual, 8 fern.
 Sprites stand on the bottom edge and fade to transparent around the blades.
 The wildflowers' (4-7) petals are drawn near-white so the grass shader can
 color each patch; see `petal_color` in src/shaders/grass.frag.
@@ -126,6 +126,40 @@ def cup(draw, rng, x, y, r):
     draw.ellipse([x - r * 0.25, y - r * 0.85, x + r * 0.25, y - r * 0.55], fill=(40, 34, 30, 255))
 
 
+def frond(draw, rng, base_x, length, angle, droop, col_base, col_tip):
+    """An arching fern frond from (base_x, bottom): a curved stalk lined with
+    pairs of leaflets that shrink toward the tip."""
+    s = TILE * SS
+    steps = 22
+    pts = []
+    for i in range(steps + 1):
+        t = i / steps
+        a = angle + droop * t * t
+        x = base_x + math.sin(a) * length * t
+        y = (s - 1) - math.cos(a) * length * t
+        pts.append((x, y))
+    for i in range(steps):
+        draw.line([pts[i], pts[i + 1]], fill=lerp(col_base, col_tip, i / steps) + (255,),
+                  width=max(1, int((1.0 - i / steps) * 2.2 * SS)))
+    for i in range(2, steps):
+        t = i / steps
+        (x0, y0), (x1, y1) = pts[i - 1], pts[i + 1]
+        dx, dy = x1 - x0, y1 - y0
+        n = math.hypot(dx, dy) or 1.0
+        dx, dy = dx / n, dy / n
+        leaf = length * 0.13 * math.sin(math.pi * min(1.0, t * 1.15)) * (1.0 - 0.25 * t)
+        width = leaf * 0.28
+        col = jitter(lerp(col_base, col_tip, 0.3 + 0.6 * t), rng, 10) + (255,)
+        cx, cy = pts[i]
+        for side in (-1, 1):
+            # Leaflets angle forward along the frond and sag a little.
+            ox, oy = -dy * side * 0.85 + dx * 0.5, dx * side * 0.85 + dy * 0.5 + 0.25
+            tip = (cx + ox * leaf, cy + oy * leaf)
+            mid = (cx + ox * leaf * 0.5, cy + oy * leaf * 0.5)
+            draw.polygon([(cx, cy), (mid[0] + dx * width, mid[1] + dy * width), tip,
+                          (mid[0] - dx * width, mid[1] - dy * width)], fill=col)
+
+
 def sprite(kind, seed):
     rng = random.Random(seed)
     s = TILE * SS
@@ -204,6 +238,16 @@ def sprite(kind, seed):
         tuft(d, rng, 22, (0.12, 0.35), 0.15, (0.08, 0.3), (0.012, 0.02), (84, 98, 66), (140, 156, 116))
         for x, y in sorted(heads, key=lambda h: h[1]):
             daisy(d, rng, x, y, rng.uniform(11, 15) * SS)
+    elif kind == 8:  # fern: a rosette of arching fronds
+        fronds = []
+        for k in range(9):
+            side = -1 if k % 2 else 1
+            angle = side * rng.uniform(0.05, 0.5)
+            fronds.append((abs(angle), angle))
+        # The most upright last, in front.
+        for _, angle in sorted(fronds, reverse=True):
+            frond(d, rng, s / 2 + rng.gauss(0, 0.02 * s), rng.uniform(0.6, 0.85) * s, angle,
+                  (1 if angle > 0 else -1) * rng.uniform(0.35, 0.75), (34, 62, 22), (96, 140, 52))
     img = img.resize((TILE, TILE), Image.LANCZOS)
     return img
 
@@ -227,8 +271,8 @@ def bleed(img):
 
 
 def main():
-    atlas = Image.new("RGBA", (TILE * 8, TILE), (0, 0, 0, 0))
-    for kind in range(8):
+    atlas = Image.new("RGBA", (TILE * 9, TILE), (0, 0, 0, 0))
+    for kind in range(9):
         atlas.paste(sprite(kind, 1000 + kind), (kind * TILE, 0))
     atlas = bleed(atlas)
     OUT.parent.mkdir(parents=True, exist_ok=True)

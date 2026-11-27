@@ -23,7 +23,7 @@ uniform vec3 to_light;   // world direction toward the shadow light (sun or moon
 
 uniform mat4 p3d_ViewMatrixInverse;
 
-in vec4 biome;   // r desert, g dry grassland, b snowy; grassland is the rest
+in vec4 biome;   // r desert, g dry grassland, b snowy (grassland is the rest); a woods
 in vec3 world_pos;
 in vec3 world_normal;
 in vec3 view_pos;
@@ -108,7 +108,14 @@ void main() {
     // Wind ripples across the sand, broken up by the rock grain.
     float ripple = sin(dot(world_pos.xz, vec2(0.8, 0.6)) * 2.6 + grain * 4.0);
     vec3 desert_sand = vec3(0.90, 0.74, 0.50) * (0.80 + 0.35 * grain + 0.05 * ripple);
-    vec3 ground = grass * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
+    // In the woods, grassland gives way to fallen leaves with mossy patches.
+    float litter = luma(two_scale(rock_tex, world_pos.xz * 1.7 + 13.0, 3.0));
+    vec3 leaves = mix(vec3(0.30, 0.27, 0.18), vec3(0.42, 0.32, 0.19), litter) * (0.65 + 0.6 * litter);
+    vec3 moss = grass * vec3(0.7, 0.8, 0.55);
+    vec3 forest_floor = mix(leaves, moss, smoothstep(0.3, 0.75, macro * 0.5 + grain * 0.6));
+    vec3 grassland = mix(grass, forest_floor,
+                         0.85 * smoothstep(0.25, 0.7, biome.a + patch * 0.5));
+    vec3 ground = grassland * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
     // Desert rock is warmer, like sandstone.
     rock *= mix(vec3(1.0), vec3(1.18, 0.98, 0.78), w_desert);
 
