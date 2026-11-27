@@ -224,6 +224,8 @@
             ;; Mask 1 is the shadow camera; water shouldn't shade the seabed.
             (call-method surface 'hide 1)))
         (let ((plants (list-ref data 5)))
+          ;; Tree trunks, as world (x z radius), for `keep-out-of-trunks!`.
+          (attribute-set! terrain 'trunks (if plants (list-ref plants 5) '()))
           (when plants
             (let ((mesh (call/kw Mesh
                                  (vertices (car plants)
@@ -931,7 +933,34 @@
 
     ;; --- per-frame update and input --------------------------------------
 
+    (define PLAYER-RADIUS 0.35)
+
+    ;; Push the player out of any tree trunk in their chunk or those around.
+    (define (keep-out-of-trunks! player)
+      (let ((chunks (state-ref 'chunks))
+            (cx (world->chunk (attribute-ref player 'x)))
+            (cz (world->chunk (attribute-ref player 'z))))
+        (for-each
+          (lambda (dx)
+            (for-each
+              (lambda (dz)
+                (let ((terrain (hash-table-ref/default chunks (list (+ cx dx) (+ cz dz)) #f)))
+                  (when terrain
+                    (for-each
+                      (lambda (trunk)
+                        (let* ((ox (- (attribute-ref player 'x) (car trunk)))
+                               (oz (- (attribute-ref player 'z) (cadr trunk)))
+                               (reach (+ PLAYER-RADIUS (list-ref trunk 2)))
+                               (d (sqrt (+ (* ox ox) (* oz oz)))))
+                          (when (and (< d reach) (> d 1e-6))
+                            (attribute-set! player 'x (+ (car trunk) (* ox (/ reach d))))
+                            (attribute-set! player 'z (+ (cadr trunk) (* oz (/ reach d)))))))
+                      (attribute-ref terrain 'trunks)))))
+              (list -1 0 1)))
+          (list -1 0 1))))
+
     (define (world-update)
+      (keep-out-of-trunks! (state-ref 'player))
       (let* ((player (state-ref 'player))
              (x (attribute-ref player 'x))
              (z (attribute-ref player 'z))

@@ -12,11 +12,12 @@ uniform vec3 ambient_color;
 uniform float fog_end;
 uniform float shadow_bias;
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
+uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 
 #include "clouds.glsl"
 
 in vec3 albedo;
-in vec2 plant;   // x: material (whole part) + across an agave leaf; y: height above base
+in vec2 plant;   // x: material (whole part) + across (fraction); y: height above base
 in vec3 world_pos;
 in vec3 world_normal;
 in vec3 view_pos;
@@ -31,6 +32,12 @@ const int BARREL = 1;
 const int CHOLLA = 2;
 const int CANE = 3;
 const int LEAF = 4;
+const int BARK = 6;
+const int NEEDLES = 7;
+const int FOLIAGE = 8;
+const int PODS = 9;
+
+uniform mat4 p3d_ViewMatrix;
 
 float sun_shadow() {
     vec2 texel = 1.0 / vec2(textureSize(p3d_LightSource[0].shadowMap, 0));
@@ -70,6 +77,22 @@ float blotch(vec3 p) {
     float b = mix(mix(hash(c + vec3(0, 0, 1)), hash(c + vec3(1, 0, 1)), f.x),
                   mix(hash(c + vec3(0, 1, 1)), hash(c + vec3(1, 1, 1)), f.x), f.y);
     return mix(a, b, f.z);
+}
+
+// Nearest of points scattered one per cell, `per_meter` cells per meter:
+// xyz the offset from it in cells, w the point's own random value.
+vec4 nearest(vec3 p, float per_meter) {
+    vec3 q = p * per_meter;
+    vec3 cell = floor(q);
+    vec4 best = vec4(9.0);
+    for (int x = -1; x <= 1; ++x)
+        for (int y = -1; y <= 1; ++y)
+            for (int z = -1; z <= 1; ++z) {
+                vec3 c = cell + vec3(x, y, z);
+                vec3 off = q - c - vec3(hash(c), hash(c + 17.0), hash(c + 31.0));
+                if (dot(off, off) < dot(best.xyz, best.xyz)) best = vec4(off, hash(c + 47.0));
+            }
+    return best;
 }
 
 void main() {
@@ -116,12 +139,54 @@ void main() {
         color = mix(color, vec3(0.32, 0.25, 0.18), edge * (0.5 + 0.5 * teeth));
         thin = 0.7;
         sheen = 0.25;
+    } else if (material == BARK) {
+        // Furrows running up the trunk.
+        float furrows = blotch(vec3(world_pos.x * 9.0, world_pos.y * 1.2, world_pos.z * 9.0));
+        color *= mix(1.0, 0.7 + 0.5 * furrows, detail);
+    } else if (material == NEEDLES) {
+        // Tufts of needles, the tips of the tier catching more light.
+        float tufts = blotch(world_pos * 4.0) * 0.6 + blotch(world_pos * 11.0) * 0.4;
+        color *= 0.85 + 0.25 * across;
+        color *= mix(1.0, 0.7 + 0.6 * tufts, detail * 0.8 + 0.2);
+        thin = 0.05;
+    } else if (material == FOLIAGE) {
+        // Clusters of leaves, with dark gaps between, in two sizes.
+        float leaves = blotch(world_pos * 2.5) * 0.55 + blotch(world_pos * 7.0) * 0.45;
+        color *= mix(0.92, 0.6 + 0.75 * leaves, detail * 0.7 + 0.3);
+        thin = 0.5;
+        sheen = 0.08;
+    }
+    vec3 bump = vec3(0.0);   // world-space tilt of the normal
+    if (material == PODS) {
+        // Packed little pods, each a dome: pale where it bulges out, ochre
+        // around, dark in the gaps; some still green, some ripened brown.
+        vec4 pod = nearest(world_pos, 45.0);
+        float r = length(pod.xyz);
+        vec3 own = albedo * (0.85 + 0.3 * hash(vec3(pod.w * 91.0)));
+        own = mix(own, vec3(0.50, 0.58, 0.24), smoothstep(0.3, 0.0, pod.w) * 0.8);
+        own = mix(own, vec3(0.48, 0.32, 0.16), smoothstep(0.75, 1.0, pod.w) * 0.8);
+        vec3 pods = mix(vec3(0.34, 0.26, 0.10), own, smoothstep(0.85, 0.4, r));
+        pods = mix(pods, vec3(0.98, 0.90, 0.48), smoothstep(0.3, 0.0, r) * 0.5);
+        color = mix(albedo * 0.8, pods, detail * 0.8 + 0.2);
+        bump = pod.xyz / max(r, 1e-3) * smoothstep(0.1, 0.7, r) * 0.9 * detail;
+        thin = 0.2;
+        sheen = 0.12;
     }
 
     // Thin parts (leaves, canes) are seen from both sides.
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(world_normal) * side;
     vec3 N = normalize(view_normal) * side;
+    if (material == PODS) {
+        bump -= n * dot(bump, n);
+        n = normalize(n + bump);
+        N = normalize(N + mat3(p3d_ViewMatrix) * bump);
+    }
+    // Fresh snow settles on the tops of branches.
+    if (material == NEEDLES || material == FOLIAGE) {
+        float snow = snow_cover * smoothstep(0.3, 0.7, n.y) * (0.75 + 0.25 * blotch(world_pos * 5.0));
+        color = mix(color, vec3(0.92, 0.94, 0.98), snow);
+    }
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     vec3 V = normalize(-view_pos);
     float shadow = sun_shadow() * cloud_shadow(world_pos, to_light);

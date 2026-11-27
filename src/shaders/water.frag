@@ -146,8 +146,10 @@ void main() {
 
     vec2 slope = wave_slope(world_pos.xz, t, 1.0 - smoothstep(12.0, 60.0, dist));
     // Ripples are too small to see far off, where they would only flicker.
-    float near = 1.0 - smoothstep(6.0, 18.0, dist);
-    if (rain > 0.0 && near > 0.0) slope += ripple_slope(world_pos.xz, t) * near;
+    float near = 1.0 - smoothstep(8.0, 25.0, dist);
+    vec2 ripples = vec2(0.0);
+    if (rain > 0.0 && near > 0.0) ripples = ripple_slope(world_pos.xz, t) * near;
+    slope += ripples;
     vec3 N = normalize(vec3(-slope.x, 1.0, -slope.y));
     float shadow = sun_shadow() * cloud_shadow(world_pos, to_light);
 
@@ -165,6 +167,9 @@ void main() {
     R.y = abs(R.y);
     float fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
     vec3 color = mix(body, sky_toward(R, world_pos), fresnel);
+    // Looking down, the water reflects too little for tilted ripples to
+    // show by reflection alone; their crests catch the sky light.
+    color += sky_toward(vec3(0.0, 1.0, 0.0), world_pos) * min(length(ripples), 1.0) * 0.3;
 
     // Sun glint.
     float rv = max(dot(reflect(-L, N), V), 0.0);

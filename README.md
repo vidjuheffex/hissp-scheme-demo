@@ -22,13 +22,14 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
-- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo and agave meshes
+- `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave and tree meshes
 - `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow,
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
-  shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants, the moon
+  shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
+  and trees (surface detail, swaying, snow on branches), the moon
   (phase shading), the sky and clouds, and rain and snow; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"`
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
@@ -152,6 +153,26 @@ regrows them. Surface detail is drawn by `src/shaders/plant.frag` rather
 than textures: areoles on pads, spines on barrels and cholla, thorns on
 ocotillo, waxy agave leaves with dark margins, darkening near the ground and
 a glow when backlit.
+
+## Trees
+
+Trees are made the same way as the desert plants, on their own coarser grid
+(`TREE-SPACING`). Grassland grows oak groves with open meadows between them
+(`GROVES`, `GROVE-FREQUENCY`); going up the mountains conifers take over
+(`MOUNTAIN-PINES`) until the tree line (`TREE-LINE`), and the snowy biome is
+all conifer forest, narrow dark spruces and broader pines with bare trunks
+below head height. Dry grassland has scattered junipers and the desert the
+odd low, spreading mesquite. `FOREST-CHANCE`, `JUNIPER-CHANCE` and
+`MESQUITE-CHANCE` set how many.
+
+Conifers are built by `make-conifer`, tiers of ragged, drooping needle
+skirts. Oaks, junipers and mesquite share `make-broadleaf`: trunks under a
+crown of overlapping leaf clumps with limbs reaching out to them, and the
+`OAK`, `JUNIPER` and `MESQUITE` forms set their proportions. In
+`plant.frag` bark gets furrows, needles tufts and leaves clusters with dark
+gaps, and fresh snow settles on the tops of branches; `plant.vert` sways
+trees in the wind. You can't walk through trunks: each chunk keeps its
+trees' positions for `keep-out-of-trunks!` in `src/world_game.sld`.
 
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.
