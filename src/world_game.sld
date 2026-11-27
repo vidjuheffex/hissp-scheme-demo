@@ -18,7 +18,7 @@
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
 ;;   (wildlife)                    how many fireflies, bats and birds are out (0 to 1)
-;;   (sounds)                      ambient loop volumes: wind rain birds crickets water
+;;   (sounds)                      ambient loop volumes: wind rain birds crickets water woods river
 ;;   (wildflowers)                 bloom of daisies, spikes, poppies, desert flowers
 ;;   (set-blooms! '(1 1 1 1))      force the blooms (0 to 1 each); #f undoes
 ;;   (set-mist! 0.8)               force the valley mist (0 to 1); #f undoes
@@ -29,6 +29,9 @@
 ;;   (set-wind-direction! 90)      force the heading; #f undoes
 ;;   (biome-here)                  biome weights under the player
 ;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
+;;   (find-river)                  stand in the nearest river
+;;   (find-canyon)                 go to the nearest canyon floor
+;;   (find-cliffs)                 go to the foot of the nearest escarpment
 ;;   (go-to! 500 -200)             move the player
 ;;   (regenerate!)                 rebuild every chunk, e.g. after terrain edits
 ;;   (reload!)                     force-reload everything
@@ -708,7 +711,7 @@
     ;; Looping ambience from assets/sounds (see tools/make_sounds.py), each
     ;; faded toward a volume set by the wind, the rain, the hour, the biome
     ;; and how near the water is.
-    (define SOUNDS (list "wind" "rain" "birds" "crickets" "water" "woods"))
+    (define SOUNDS (list "wind" "rain" "birds" "crickets" "water" "woods" "river"))
 
     ;; Seconds for a loop to get most of the way to a new volume.
     (define SOUND-FADE 4.0)
@@ -762,7 +765,22 @@
               (state-set! 'forest-here (list x z f))
               f))))
 
+    ;; How near a river is to (x, z), 0 to 1: full within the water,
+    ;; nothing past `RIVER-EARSHOT` meters or where the channel runs dry,
+    ;; worked out again only once the player has moved a few meters.
+    (define RIVER-EARSHOT 45.0)
+    (define (river-here x z)
+      (let ((last (state-ref 'river-here)))
+        (if (and last (< (+ (square (- x (car last))) (square (- z (cadr last)))) 9.0))
+            (list-ref last 2)
+            (let* ((weights (biome-weights x z))
+                   (r (* (- 1.0 (smooth-step RIVER-WIDTH RIVER-EARSHOT (channel-distance x z)))
+                         (- 1.0 (smooth-step 0.45 0.65 (+ (car weights) (cadr weights)))))))
+              (state-set! 'river-here (list x z r))
+              r))))
+
     ;; Target volumes, in `SOUNDS` order, at (x, z) with water `near` (0 to 1).
+    ;; By a river the waves' lapping gives way to running water.
     ;; In the woods, open-country birds and crickets give way to woodland
     ;; birds by day (and the odd owl at night, see `update-owls!`).
     (define (sound-levels x z near)
@@ -778,6 +796,7 @@
              (snowy (list-ref weights 2))
              (grass (max 0.0 (- 1.0 desert dry snowy)))
              (forest (smooth-step 0.1 0.55 (forest-here x z)))
+             (river (river-here x z))
              (dry-weather (- 1.0 (smooth-step 0.05 0.3 precipitation)))
              (day (smooth-step -0.05 0.15 height))
              (dark (- 1.0 (smooth-step -0.15 0.02 height)))
@@ -792,10 +811,11 @@
                  (+ grass (* 0.8 dry) (* 0.5 desert))
                  (- 1.0 (smooth-step 1.0 1.8 wind))
                  (- 1.0 (* 0.6 forest)))
-              (* 0.8 near (+ 0.35 (* 0.65 (clamp01 (/ wind 1.2)))))
+              (* 0.8 near (- 1.0 (* 0.8 river)) (+ 0.35 (* 0.65 (clamp01 (/ wind 1.2)))))
               (* 0.9 day dry-weather forest
                  (+ 0.55 (* 0.45 morning))
-                 (- 1.0 (smooth-step 1.2 2.0 wind))))))
+                 (- 1.0 (smooth-step 1.2 2.0 wind)))
+              (* 0.75 river))))
 
     ;; Owls call now and then in the woods on still, dry nights: on average
     ;; once every `OWL-EVERY` seconds deep in the forest, never by day.
@@ -848,7 +868,7 @@
                         (list (car sounds) volumes heard
                               (modulo (+ k 1) (vector-length heard))))))))
 
-    ;; REPL: `(sounds)` => volumes of (wind rain birds crickets water), 0 to 1.
+    ;; REPL: `(sounds)` => volumes of (wind rain birds crickets water woods river), 0 to 1.
     (define (sounds)
       (map (lambda (v) (/ (round (* 100.0 v)) 100.0)) (cadr (state-ref 'sounds))))
 
@@ -1484,13 +1504,66 @@
     (define (go-to! x z)
       (let ((player (state-ref 'player)))
         (attribute-set! player 'x x)
-        (attribute-set! player 'z z)))
+        (attribute-set! player 'z z)
+        (attribute-set! player 'y (max (terrain-height x z) (- SEA-LEVEL WADE-DEPTH)))
+        (state-set! 'fall-speed 0.0)))
 
     ;; `(visit-biome! "snowy")`: go to the nearest spot of that biome.
     (define (visit-biome! name)
       (let ((spot (find-biome name)))
         (when spot (go-to! (car spot) (cadr spot)))
         spot))
+
+    ;; The nearest (x z) where `good?` holds, searching rings 32 units apart
+    ;; out to about 2.5 km, or #f.
+    (define (find-spot good?)
+      (let* ((here (player-xz))
+             (px (car here))
+             (pz (cadr here)))
+        (let ring ((r 1))
+          (and (<= r 80)
+               (let ((n (* 8 r)))
+                 (let try ((k 0))
+                   (if (= k n)
+                       (ring (+ r 1))
+                       (let* ((a (/ (* 2.0 PI k) n))
+                              (x (+ px (* 32.0 r (cos a))))
+                              (z (+ pz (* 32.0 r (sin a)))))
+                         (if (good? x z)
+                             (list x z)
+                             (try (+ k 1)))))))))))
+
+    (define (visit-spot! good?)
+      (let ((spot (find-spot good?)))
+        (when spot (go-to! (car spot) (cadr spot)))
+        spot))
+
+    ;; Highest ground `r` units away along x or z.
+    (define (highest-around x z r)
+      (max (terrain-height (+ x r) z) (terrain-height (- x r) z)
+           (terrain-height x (+ z r)) (terrain-height x (- z r))))
+
+    ;; `(find-river)`: go and stand in the nearest river.
+    (define (find-river)
+      (visit-spot! (lambda (x z)
+                     (and (< (channel-distance x z) 2.0)
+                          (< (terrain-height x z) SEA-LEVEL)))))
+
+    ;; `(find-canyon)`: go to the nearest canyon floor, beside its river.
+    (define (find-canyon)
+      (visit-spot! (lambda (x z)
+                     (let ((d (channel-distance x z)))
+                       (and (< (+ RIVER-WIDTH 1.0) d (+ RIVER-WIDTH 5.0))
+                            (let ((h (terrain-height x z)))
+                              (and (< h (+ SEA-LEVEL 1.5))
+                                   (> (highest-around x z 20.0) (+ h 12.0)))))))))
+
+    ;; `(find-cliffs)`: go to the foot of the nearest escarpment.
+    (define (find-cliffs)
+      (visit-spot! (lambda (x z)
+                     (and (> (cliffiness x z) 0.8)
+                          (> (channel-distance x z) 40.0)
+                          (> (highest-around x z 4.0) (+ (terrain-height x z) 5.0))))))
 
     ;; --- per-frame update and input --------------------------------------
 
@@ -1584,6 +1657,15 @@
     (define WADE-DEPTH 0.8)
     (define WADE-SLOWEST 0.5)
 
+    ;; Steepest ground the player can walk up, in meters of rise per meter:
+    ;; about 63 degrees, so even the steepest hillsides are walkable, but
+    ;; cliffs and canyon walls (4 to 10) are not.
+    (define MAX-CLIMB 2.0)
+    ;; Ground dropping away steeper than this is a fall, not a step down.
+    (define FALL-SNAP 2.5)
+    ;; Meters a second, each second, of falling.
+    (define GRAVITY 20.0)
+
     (define SURFACES (list "grass" "dirt" "rock" "snow" "water"))
     (define STEP-VARIANTS 4)
 
@@ -1604,6 +1686,48 @@
                                     (list 1 2 3 4)))
                              SURFACES)
                         0.0 #f)))
+
+    ;; Undoes the controller's last move where the ground ahead rises steeper
+    ;; than `MAX-CLIMB` above the player's feet, sliding along the foot of
+    ;; the slope if moving along just one axis would do. Returns how far the
+    ;; player stepped, or #f after a jump (`go-to!`) or on the first frame.
+    (define (keep-off-cliffs! player)
+      (let* ((last (state-ref 'last-feet))
+             (x (attribute-ref player 'x))
+             (z (attribute-ref player 'z))
+             (feet (attribute-ref player 'y))
+             (step (lambda (x z)
+                     (sqrt (+ (square (- x (car last))) (square (- z (cadr last)))))))
+             (too-steep? (lambda (x z)
+                           (> (terrain-height x z) (+ feet 0.01 (* MAX-CLIMB (step x z))))))
+             (moved (and last (< (step x z) 5.0))))
+        (when (and moved (too-steep? x z))
+          (let ((lx (car last)) (lz (cadr last)))
+            (cond ((not (too-steep? x lz)) (set! z lz))
+                  ((not (too-steep? lx z)) (set! x lx))
+                  (else (set! x lx) (set! z lz)))
+            (attribute-set! player 'x x)
+            (attribute-set! player 'z z)))
+        (state-set! 'last-feet (list x z))
+        (and moved (step x z))))
+
+    ;; Puts the player's feet on `ground`, stepping down slopes but falling
+    ;; off anything steeper than `FALL-SNAP`, after a `stepped`-meter move.
+    (define (settle-feet! player ground stepped dt)
+      (let ((y (attribute-ref player 'y))
+            (speed (state-ref 'fall-speed)))
+        (cond ((or (not stepped) (>= ground y)
+                   (and (= speed 0.0) (<= (- y ground) (+ 0.02 (* FALL-SNAP stepped)))))
+               (attribute-set! player 'y ground)
+               (state-set! 'fall-speed 0.0))
+              (else
+               (let* ((speed (+ speed (* GRAVITY dt)))
+                      (next (- y (* speed dt))))
+                 (if (<= next ground)
+                     (begin (attribute-set! player 'y ground)
+                            (state-set! 'fall-speed 0.0))
+                     (begin (attribute-set! player 'y next)
+                            (state-set! 'fall-speed speed))))))))
 
     ;; Undoes the controller's last move where it would take the player into
     ;; water deeper than `WADE-DEPTH`, sliding along the shore if moving
@@ -1661,7 +1785,7 @@
                       (* (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED)
                          (- 1.0 (* (- 1.0 WADE-SLOWEST) wading))))
       (let ((steps (state-ref 'footsteps)))
-        (when (and steps (> dt 0.0))
+        (when (and steps (> dt 0.0) (= (state-ref 'fall-speed) 0.0))
           (let* ((was (list-ref steps 2))
                  (moved (if was (sqrt (+ (square (- x (car was))) (square (- z (cadr was))))) 0.0))
                  (speed (if (< moved 5.0) (/ moved dt) 0.0))
@@ -1687,6 +1811,7 @@
     (define (world-update)
       (keep-out-of-trunks! (state-ref 'player))
       (let* ((player (state-ref 'player))
+             (stepped (keep-off-cliffs! player))
              (bottom (keep-out-of-deep-water! player))
              (x (attribute-ref player 'x))
              (z (attribute-ref player 'z))
@@ -1702,10 +1827,10 @@
           (update-owls! x z dt)
           (update-mist! x z dt)
           (update-storm! dt)
-          (update-walking! player x z bottom dt))
-        ;; Stick the player to the ground (gravity is off on the controller),
-        ;; wading on the bottom in the shallows.
-        (attribute-set! player 'y (max bottom (- SEA-LEVEL WADE-DEPTH)))
+          (update-walking! player x z bottom dt)
+          ;; The controller's own gravity is off: feet go on the ground here,
+          ;; wading on the bottom in the shallows.
+          (settle-feet! player (max bottom (- SEA-LEVEL WADE-DEPTH)) stepped dt))
         (follow-sun! x z)
         (update-hud! player)
         (build-finished! pcx pcz)

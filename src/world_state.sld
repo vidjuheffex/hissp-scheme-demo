@@ -49,8 +49,11 @@
             (list 'sounds #f)            ; (audios volumes water-heard next-point), see `make-sounds!`
             (list 'footsteps #f)         ; (sounds stride-phase last-xz), see `make-footsteps!`
             (list 'last-ground #f)       ; (x z depth) where the player last stood
+            (list 'last-feet #f)         ; (x z) the player's last position, see `keep-off-cliffs!`
+            (list 'fall-speed 0.0)       ; meters a second the player is falling
             (list 'eye-motion #f)        ; (time position velocity) of the camera, see `eye-velocity!`
             (list 'forest-here #f)       ; (x z density) last worked out by `forest-here`
+            (list 'river-here #f)        ; (x z nearness) last worked out by `river-here`
             (list 'owls #f)              ; owl call sounds, see `update-owls!`
             (list 'bloom #f)             ; (days amounts) wildflower bloom, see `update-blooms!`
             (list 'bloom-override #f)    ; blooms forced from the REPL

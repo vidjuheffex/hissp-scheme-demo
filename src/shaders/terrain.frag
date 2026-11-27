@@ -118,12 +118,19 @@ void main() {
     vec3 ground = grassland * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
     // Desert rock is warmer, like sandstone.
     rock *= mix(vec3(1.0), vec3(1.18, 0.98, 0.78), w_desert);
+    // Cliffs and canyon walls show their layers: bands by height, wandering
+    // a little, grey-brown in most places and red and buff in dry country.
+    float layer = h + luma(texture(grass_tex, world_pos.xz / 60.0).rgb) * 3.0 + grain * 0.4;
+    float band = sin(layer * 1.9) * 0.5 + sin(layer * 0.73 + 1.3) * 0.35 + sin(layer * 4.1) * 0.15;
+    vec3 strata = mix(vec3(0.82, 0.79, 0.76), vec3(1.1, 1.06, 1.0), band * 0.5 + 0.5);
+    vec3 red_strata = mix(vec3(0.98, 0.62, 0.44), vec3(1.18, 0.98, 0.74), smoothstep(-0.3, 0.3, band));
+    strata = mix(strata, red_strata, max(w_desert, w_dry * 0.6));
 
     float jitter = macro * 2.5;
     vec3 albedo = ground;
     // Bare rock band on high ground, except where snow covers it.
     albedo = mix(albedo, rock, smoothstep(26.0, 34.0, h + jitter * 2.0) * (1.0 - w_snowy));
-    albedo = mix(albedo, rock, smoothstep(0.28, 0.45, slope));
+    albedo = mix(albedo, rock * strata, smoothstep(0.28, 0.45, slope));
     albedo = mix(albedo, sand, 1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h));
     albedo = mix(albedo, seabed, 1.0 - smoothstep(sea_level - 1.5, sea_level, h));
     // Wet ground is darker, except under snow: after rain, and always in a

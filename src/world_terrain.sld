@@ -12,7 +12,8 @@
 ;; fields, temperature and moisture. Each biome reshapes the same terrain
 ;; noise, and the shapes are blended by biome weight so borders are smooth.
 ;; Chunks carry the weights in their vertex colors for the shader, and how
-;; wooded the ground is in their alpha (see forests below).
+;; wooded the ground is in their alpha (see forests below). Rivers, canyons
+;; and cliffs are cut into the blended height afterwards (see below).
 
 (define-library (world terrain)
   (export CHUNK-SIZE
@@ -25,6 +26,9 @@
           biome-weights
           biome-at
           forest-density
+          channel-distance
+          cliffiness
+          RIVER-WIDTH
           chunk-mesh-data
           chunk-grass
           hash2
@@ -234,11 +238,204 @@
     ;; Terrain height at one world (x, z).
     (define (terrain-height x z)
       (let ((w (biome-weights x z)))
-        (biome-height (terrain-noise x z) (car w) (cadr w) (list-ref w 2) x z)))
+        (shape-land (biome-height (terrain-noise x z) (car w) (cadr w) (list-ref w 2) x z)
+                    (features x z) (car w) (cadr w))))
 
     ;; Walkable height: terrain, but never below the water surface.
     (define (ground-height x z)
       (max SEA-LEVEL (terrain-height x z)))
+
+    ;; --- rivers, canyons and cliffs ----------------------------------------
+    ;;
+    ;; One carver cuts every channel. Its line is where a slow, warped noise
+    ;; crosses 0.5; those contours run on and on, so a channel reaches the
+    ;; sea or low ground rather than stopping. Across low ground the cut is a
+    ;; wide valley with a river in it, its bed just below the sea so the
+    ;; sea's water fills it, shallow enough to wade. Where the land stands
+    ;; higher the same cut drops over a meter or two instead: a canyon with
+    ;; sheer walls and the river at the bottom. In desert and dry grassland
+    ;; the bed stays above the sea, a dry wash.
+    ;;
+    ;; In cliff country (a rare, slow region noise) hills, and desert flats
+    ;; as mesas, rise in sheer steps instead of slopes. The steps go on
+    ;; before the carve, so channels cut through them and rivers stay wet.
+    ;;
+    ;; These noises are slow, so they're sampled on a FEATURE-STEP lattice
+    ;; and blended. Chunks and `terrain-height` share the lattice, so the
+    ;; ground you walk on matches the mesh.
+
+    (define FEATURE-STEP 8.0)
+    (define RIVER-FREQUENCY (/ 1.0 700.0))
+    (define RIVER-WARP-FREQUENCY (/ 1.0 350.0))
+    (define RIVER-WARP 300.0)
+    (define RIVER-METERS 1000.0)          ; meters from the line per unit the noise is off 0.5, roughly
+    (define RIVER-WIDTH 4.0)              ; half-width of the water
+    (define RIVER-DEPTH 0.75)             ; bed below the sea mid-river: wadeable
+    (define WASH-FLOOR 0.4)               ; dry beds' height above the sea
+    (define BANK-HEIGHT 0.3)              ; banks above the sea at the water's edge
+    (define BANK-SLOPE 0.12)              ; rise per meter of a valley's sides
+    (define CANYON-RISE (list 8.0 16.0))  ; land above the sea, from valley to canyon
+    (define CANYON-FLOOR 6.0)             ; dry floor each side of a canyon's river
+    (define CANYON-WALL 10.0)             ; rise per meter of a canyon's walls
+    (define VALLEY-ROUNDING 3.0)          ; meters smoothed where a valley side meets the land
+
+    (define CLIFF-REGION-FREQUENCY (/ 1.0 1500.0))
+    (define CLIFF-REGIONS (list 0.78 0.85)) ; region noise ramp from none to cliff country
+    (define CLIFF-HILLS (list 8.0 14.0))  ; land above the sea, from no cliffs to cliffs
+    (define CLIFF-FREQUENCY (/ 1.0 250.0))
+    (define CLIFF-STEPS 5.0)              ; steps across the noise's range
+    (define CLIFF-STEP 6.0)               ; meters per step
+    (define CLIFF-EDGE 0.012)             ; half the share of a step's noise it rises over
+
+    ;; #(channel cliff-region cliff-steps) noises at one lattice point.
+    (define (feature-noises x z)
+      (let* ((sx (+ x SEED-X))
+             (sz (+ z SEED-Z))
+             (qx (* sx RIVER-WARP-FREQUENCY))
+             (qz (* sz RIVER-WARP-FREQUENCY))
+             (wx (+ sx (* RIVER-WARP (- (value-noise (+ qx 71.3) (+ qz 19.1)) 0.5))))
+             (wz (+ sz (* RIVER-WARP (- (value-noise (+ qx 13.7) (+ qz 83.9)) 0.5)))))
+        (vector (fbm (+ (* wx RIVER-FREQUENCY) 5.5) (+ (* wz RIVER-FREQUENCY) 9.7) 2)
+                (value-noise (+ (* sx CLIFF-REGION-FREQUENCY) 41.9)
+                             (+ (* sz CLIFF-REGION-FREQUENCY) 3.3))
+                (fbm (+ (* sx CLIFF-FREQUENCY) 27.1) (+ (* sz CLIFF-FREQUENCY) 61.7) 2))))
+
+    (define (direct-corner ix iz)
+      (feature-noises (* ix FEATURE-STEP) (* iz FEATURE-STEP)))
+
+    ;; Where (x, z) falls in the lattice: (ix iz u v), the lattice cell and
+    ;; how far across it.
+    (define (lattice-cell x z)
+      (let* ((fx (/ x FEATURE-STEP))
+             (fz (/ z FEATURE-STEP))
+             (ix (exact (floor fx)))
+             (iz (exact (floor fz))))
+        (list ix iz (- fx ix) (- fz iz))))
+
+    (define (blend-corners a b c d u v)
+      (vector (bilerp (vector-ref a 0) (vector-ref b 0) (vector-ref c 0) (vector-ref d 0) u v)
+              (bilerp (vector-ref a 1) (vector-ref b 1) (vector-ref c 1) (vector-ref d 1) u v)
+              (bilerp (vector-ref a 2) (vector-ref b 2) (vector-ref c 2) (vector-ref d 2) u v)))
+
+    ;; The feature noises at (x, z): #(channel cliff-region cliff-steps).
+    (define (features x z)
+      (let* ((cell (lattice-cell x z))
+             (ix (car cell))
+             (iz (cadr cell)))
+        (blend-corners (direct-corner ix iz) (direct-corner (+ ix 1) iz)
+                       (direct-corner ix (+ iz 1)) (direct-corner (+ ix 1) (+ iz 1))
+                       (list-ref cell 2) (list-ref cell 3))))
+
+    ;; `features` for a count x count grid (row-major) whose first sample is
+    ;; world (x0, z0), as one vector of feature vectors. Each lattice point
+    ;; and each column's cell are worked out once, and the arithmetic is
+    ;; `features`' own, so the two agree exactly.
+    (define (feature-grid x0 z0 step count)
+      (let* ((first (lattice-cell x0 z0))
+             (ix0 (car first))
+             (iz0 (cadr first))
+             (columns (make-vector count #f))
+             (rows (make-vector count #f))
+             (n 0))
+        (do ((i 0 (+ i 1))) ((= i count))
+          (let ((cell (lattice-cell (+ x0 (* i step)) (+ z0 (* i step)))))
+            (vector-set! columns i (cons (- (car cell) ix0) (list-ref cell 2)))
+            (vector-set! rows i (cons (- (cadr cell) iz0) (list-ref cell 3)))
+            (set! n (max n (+ 2 (- (car cell) ix0)) (+ 2 (- (cadr cell) iz0))))))
+        (let ((lattice (make-vector (* n n) #f))
+              (out (make-vector (* count count) #f)))
+          (do ((j 0 (+ j 1))) ((= j n))
+            (do ((i 0 (+ i 1))) ((= i n))
+              (vector-set! lattice (+ i (* j n)) (direct-corner (+ ix0 i) (+ iz0 j)))))
+          (do ((j 0 (+ j 1))) ((= j count))
+            (let* ((row (vector-ref rows j))
+                   (base (* (car row) n))
+                   (v (cdr row)))
+              (do ((i 0 (+ i 1))) ((= i count))
+                (let* ((column (vector-ref columns i))
+                       (k (+ base (car column))))
+                  (vector-set! out (+ i (* j count))
+                               (blend-corners (vector-ref lattice k)
+                                              (vector-ref lattice (+ k 1))
+                                              (vector-ref lattice (+ k n))
+                                              (vector-ref lattice (+ k n 1))
+                                              (cdr column) v))))))
+          out)))
+
+    ;; `ramp` from `lo` to `hi`, without the list: these run for every sample.
+    (define (ramp-between lo hi x)
+      (cond ((<= x lo) 0.0)
+            ((>= x hi) 1.0)
+            (else (smooth (/ (- x lo) (- hi lo))))))
+
+    (define (smooth-min a b k)
+      (let ((low (if (< a b) a b)))
+        (if (<= k 0.0)
+            low
+            (let ((e (- k (abs (- a b)))))
+              (if (> e 0.0) (- low (/ (* e e) (* 4.0 k))) low)))))
+
+    ;; How much of cliff country's stepping applies at height `h`.
+    (define (cliff-amount h desert region)
+      (if (<= region (car CLIFF-REGIONS))
+          0.0
+          (let ((hills (ramp-between (car CLIFF-HILLS) (cadr CLIFF-HILLS) (- h SEA-LEVEL))))
+            (* (ramp-between (car CLIFF-REGIONS) (cadr CLIFF-REGIONS) region)
+               (if (> desert hills) desert hills)))))
+
+    (define (cliff-steps h desert region s)
+      (let ((amount (cliff-amount h desert region)))
+        (if (<= amount 0.0)
+            h
+            (let* ((t (* s CLIFF-STEPS))
+                   (k (floor t)))
+              (+ h (* amount CLIFF-STEP
+                      (+ k (ramp-between (- 0.5 CLIFF-EDGE) (+ 0.5 CLIFF-EDGE) (- t k)))))))))
+
+    ;; Meters from the nearest channel's line, for channel noise `c`.
+    (define (channel-meters c) (* RIVER-METERS (abs (- c 0.5))))
+
+    ;; Lowest a channel `dist` meters away can cut, whatever the land: past
+    ;; this, `carve` leaves the height alone.
+    (define (lowest-cut dist)
+      (let ((s (- dist RIVER-WIDTH)))
+        (if (< s CANYON-FLOOR)
+            (+ SEA-LEVEL BANK-HEIGHT (* 0.05 s))
+            (+ SEA-LEVEL BANK-HEIGHT (* 0.05 CANYON-FLOOR) (* BANK-SLOPE (- s CANYON-FLOOR))))))
+
+    ;; Height `h` cut down by a channel `dist` meters away; `dry` (0 to 1)
+    ;; lifts the bed out of the water.
+    (define (carve h dist dry)
+      (if (and (> dist RIVER-WIDTH) (> (lowest-cut dist) (+ h VALLEY-ROUNDING)))
+          h
+          (let* ((canyon (ramp-between (car CANYON-RISE) (cadr CANYON-RISE) (- h SEA-LEVEL)))
+                 (floor (lerp (- SEA-LEVEL RIVER-DEPTH) (+ SEA-LEVEL WASH-FLOOR) dry))
+                 (edge (if (> floor (+ SEA-LEVEL BANK-HEIGHT)) floor (+ SEA-LEVEL BANK-HEIGHT)))
+                 (valley (if (< dist RIVER-WIDTH)
+                             (lerp floor edge (smooth (/ dist RIVER-WIDTH)))
+                             (let ((s (- dist RIVER-WIDTH))
+                                   (flat (* canyon CANYON-FLOOR))
+                                   (slope (lerp BANK-SLOPE CANYON-WALL canyon)))
+                               (if (< s flat)
+                                   (+ edge (* 0.05 s))
+                                   (+ edge (* 0.05 flat) (* slope (- s flat))))))))
+            (smooth-min h valley (* VALLEY-ROUNDING (- 1.0 canyon))))))
+
+    ;; Biome height `h` with cliffs and channels, for feature noises `f`.
+    (define (shape-land h f desert dry)
+      (let ((dryness (+ desert dry)))
+        (carve (cliff-steps h desert (vector-ref f 1) (vector-ref f 2))
+               (channel-meters (vector-ref f 0))
+               (if (> dryness 1.0) 1.0 dryness))))
+
+    ;; REPL and the game: meters from the nearest channel's line, and how
+    ;; much cliff country's stepping applies, at (x, z).
+    (define (channel-distance x z)
+      (channel-meters (vector-ref (features x z) 0)))
+
+    (define (cliffiness x z)
+      (let ((w (biome-weights x z)))
+        (cliff-amount (terrain-height x z) (car w) (vector-ref (features x z) 1))))
 
     ;; --- forests -----------------------------------------------------------
     ;;
@@ -258,12 +455,12 @@
 
     (define (woods x z h wet)
       (let ((shift (* WET-GROVES wet)))
-        (* (ramp (list (- (car GROVES) shift) (- (cadr GROVES) shift))
-                 (value-noise (* (+ x SEED-X) GROVE-FREQUENCY)
-                              (* (+ z SEED-Z) GROVE-FREQUENCY)))
+        (* (ramp-between (- (car GROVES) shift) (- (cadr GROVES) shift)
+                         (value-noise (* (+ x SEED-X) GROVE-FREQUENCY)
+                                      (* (+ z SEED-Z) GROVE-FREQUENCY)))
            (+ DRY-WOODS (* (- 1.0 DRY-WOODS) wet))
-           (- 1.0 (ramp WOODS-TOP h))
-           (ramp (list (+ SEA-LEVEL (car WOODS-SHORE)) (+ SEA-LEVEL (cadr WOODS-SHORE))) h))))
+           (- 1.0 (ramp-between (car WOODS-TOP) (cadr WOODS-TOP) h))
+           (ramp-between (+ SEA-LEVEL (car WOODS-SHORE)) (+ SEA-LEVEL (cadr WOODS-SHORE)) h))))
 
     ;; REPL: (forest-density x z) -> how wooded the ground is, 0 to 1,
     ;; counting the biome.
@@ -713,19 +910,24 @@
                (desert (car biomes))
                (dry (cadr biomes))
                (snowy (list-ref biomes 2))
-               (wet (list-ref biomes 3)))
+               (wet (list-ref biomes 3))
+               (feature (feature-grid x0 z0 CELL SAMPLES)))
           (pause)
           (do ((j 0 (+ j 1))) ((= j SAMPLES))
             (let ((z (+ z0 (* j CELL))))
               (do ((i 0 (+ i 1))) ((= i SAMPLES))
-                (let ((k (+ i (* j SAMPLES))))
+                (let ((k (+ i (* j SAMPLES)))
+                      (x (+ x0 (* i CELL))))
                   (vector-set! heights k
-                               (biome-height (vector-ref heights k)
-                                             (vector-ref desert k)
-                                             (vector-ref dry k)
-                                             (vector-ref snowy k)
-                                             (+ x0 (* i CELL))
-                                             z))))))
+                               (shape-land (biome-height (vector-ref heights k)
+                                                         (vector-ref desert k)
+                                                         (vector-ref dry k)
+                                                         (vector-ref snowy k)
+                                                         x
+                                                         z)
+                                           (vector-ref feature k)
+                                           (vector-ref desert k) (vector-ref dry k)))))
+              (pause)))
           (pause)
           ;; Vertex (i, j) is sample (i + 1, j + 1), past the border.
           (do ((j 0 (+ j 1))) ((= j VERTS))

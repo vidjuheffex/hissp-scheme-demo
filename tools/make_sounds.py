@@ -8,7 +8,7 @@ end wrap around to the start. The game fades the loops in and out; see
 
     uv run --no-project --with numpy --with soundfile tools/make_sounds.py [names...]
 
-With names (wind, rain, birds, crickets, water, woods, owls, steps, thunder), only those
+With names (wind, rain, birds, crickets, water, river, woods, owls, steps, thunder), only those
 are written.
 """
 
@@ -306,6 +306,25 @@ def water():
     return reverb(out, 0.5, 0.2)
 
 
+def river():
+    """A shallow river running over stones: a soft rush under a steady
+    babble of bubbles, busier and quieter by turns."""
+    n = seconds(24)
+    busy = swell(n, 0.25)
+    out = shaped_noise(n, 80, 1500, -0.6) * 0.15 * (0.8 + 0.2 * busy)
+    out += shaped_noise(n, 1500, 6000, -0.4) * 0.02 * (0.6 + 0.4 * busy)
+    for at in rng.uniform(0, 24, 2200):
+        k = seconds(at)
+        if rng.uniform() > 0.35 + 0.65 * busy[k]:
+            continue
+        f0 = np.exp(rng.uniform(np.log(350), np.log(2600)))
+        loud = 0.1 * rng.lognormal(0, 0.5) * (f0 / 1000.0) ** -0.4
+        place(out, bubble(f0, rng.uniform(0.05, 0.3)) * loud, k)
+    for at in rng.uniform(0, 24, 60):  # the odd deeper gloop
+        place(out, bubble(rng.uniform(150, 350), 0.3) * 0.2, seconds(at))
+    return reverb(out, 0.4, 0.15)
+
+
 def burst(m, attack, decay):
     """An envelope `m` samples long: up over `attack` seconds, then dying away to nothing."""
     t = np.arange(m) / RATE
@@ -423,6 +442,7 @@ if __name__ == "__main__":
     make("birds", lambda: save("birds", birds()))
     make("crickets", lambda: save("crickets", crickets()))
     make("water", lambda: save("water", water()))
+    make("river", lambda: save("river", river()))
     make("woods", lambda: save("woods", woods()))
     make("owls", lambda: [save(f"owl-{k}", owl(k == 1), 0.8) for k in (1, 2)])
     make("steps", lambda: [save(f"steps/{surface}-{k}", footstep(surface), loudness)

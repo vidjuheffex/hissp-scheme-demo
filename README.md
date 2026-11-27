@@ -10,6 +10,7 @@ uv run main.py 1234   # revisit a world by seed
 
 Controls: WASD to walk (Shift to sprint), mouse to look, Escape to toggle
 mouse lock. You can wade into water up to about thigh deep, slowing as it gets deeper, but no deeper.
+You can't walk up cliffs or canyon walls, but you can walk off them, and fall.
 Your position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`
@@ -23,13 +24,13 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
-- `src/world_terrain.sld` — `(world terrain)`: noise, biomes, forests, heights, chunk mesh data
+- `src/world_terrain.sld` — `(world terrain)`: noise, biomes, rivers, canyons and cliffs, forests, heights, chunk mesh data
 - `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree, undergrowth and rock meshes
 - `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow, wind, wind lines
 - `src/world_life.sld` — `(world life)`: fireflies, bats and birds
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
-- `src/shaders/` — GLSL for the terrain (biome ground cover, forest floor, rock, beaches, snow,
+- `src/shaders/` — GLSL for the terrain (biome ground cover, forest floor, rock and its strata, beaches, snow,
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
@@ -38,7 +39,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   the cloud layer, spliced into every shader with `#include "clouds.glsl"` (and
   likewise `stars.glsl` and `mist.glsl`)
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
-- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water, woods), owl calls, footsteps and thunder, synthesized by
+- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water, woods, river), owl calls, footsteps and thunder, synthesized by
   `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
@@ -75,6 +76,9 @@ Type Scheme into the terminal that started the game, one form per line:
 (wildlife)                 ; how many fireflies, bats and birds are out, 0 to 1
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
+(find-river)               ; stand in the nearest river
+(find-canyon)              ; go to the nearest canyon floor
+(find-cliffs)              ; go to the foot of the nearest escarpment
 (go-to! 500 -200)          ; move the player
 (regenerate!)              ; rebuild every chunk
 (reload!)                  ; force-reload everything
@@ -170,7 +174,7 @@ player, sampled a few rows a frame as you move.
 
 ## Sound
 
-Six seamless ambient loops play all the time, each faded (over a few
+Seven seamless ambient loops play all the time, each faded (over a few
 seconds) toward a volume set by what's around you:
 
 - **Wind**: a low rush always, gusting and whistling as the wind picks up
@@ -183,7 +187,9 @@ seconds) toward a volume set by what's around you:
   a long echo
 - **Water**: waves lapping when there's water within about 55 m, louder
   nearer and in the wind. The terrain is checked at points on three rings
-  around you, one point a frame.
+  around you, one point a frame. By a river it mostly gives way to:
+- **River**: running water, a soft rush under a babble of bubbles, within
+  about 45 m of a river (`RIVER-EARSHOT`); dry washes are silent
 
 Owls aren't a loop: in forest on still, dry nights an owl now and then calls
 once, "hoo … hoo", near or far, about every three minutes at most
@@ -213,6 +219,40 @@ The knobs are at the top of the biomes section in `src/world_terrain.sld`:
 `CLIMATE-FREQUENCY` (biome size), `WARP-AMOUNT` (how wiggly borders are),
 the `COLD`/`HOT`/`ARID`/`SEMI-ARID` thresholds (how much of each biome), and
 the per-biome height functions. Saving the file regenerates the world.
+
+## Rivers, canyons and cliffs
+
+One carver in `src/world_terrain.sld` cuts every channel. A channel's line
+is where a slow, warped noise crosses 0.5; those lines wind on for
+kilometres, so a river reaches the sea or low ground rather than stopping.
+What the cut looks like depends on the land it goes through:
+
+- **Low ground**: a wide valley with a river along it. The bed dips just
+  below sea level, so the sea's own water fills it, about thigh deep in the
+  middle (`RIVER-DEPTH`), so every river can be waded.
+- **Higher ground** (`CANYON-RISE`, 8 to 16 m above the sea): the same cut
+  drops over a meter or two instead, a canyon with sheer walls, a sandy
+  floor and the river down the middle.
+- **Desert and dry grassland**: the bed stays above the water, a dry wash,
+  or a dry canyon through higher ground.
+
+Cliff country, rarer (about a tenth of the land, `CLIFF-REGIONS`), turns
+hills, and flat desert as mesas, into sheer steps of 6 m (`CLIFF-STEP`) with
+level ground between: escarpments and buttes. The steps go on before the
+carve, so rivers cut through them and stay wet.
+
+Steep rock shows its strata in `terrain.frag`: bands by height, grey-brown
+in most places and red and buff like sandstone in dry country.
+
+You can walk up anything up to about 63 degrees (`MAX-CLIMB` in
+`src/world_game.sld`), which takes in even the steepest ordinary hillsides,
+but not cliffs or canyon walls: you slide along their foot instead. Walk off
+a rim and you fall (`GRAVITY`) to the ground below.
+
+The slow channel and cliff noises are sampled on an 8 m lattice
+(`FEATURE-STEP`) and blended, the same way for chunks and for
+`terrain-height`, so the ground you walk on matches the mesh, and chunks
+build no slower than before.
 
 ## Forests
 
