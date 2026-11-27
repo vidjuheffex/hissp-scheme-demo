@@ -133,7 +133,10 @@ drifting with the wind) over them. The layer itself is in
 `src/shaders/clouds.glsl`, which the ground, grass, plant and water shaders
 also include: each looks up toward the sun through the same noise to shade
 itself. Rain and snow are 12,000 quads in a box
-that follows the camera, moved entirely in `precip.vert`. The weather model
+that follows the camera, moved entirely in `precip.vert`. They blow
+downwind and gust with the wind (rain slants hard in a storm, snow drifts),
+and streaks lean only a little as you walk. `RAIN-PUSH` and `SNOW-PUSH` in
+`src/world_game.sld` set how far the wind pushes them. The weather model
 and its rates are in `src/world_weather.sld`; how weather changes the light is
 in `scene-at` in `src/world_game.sld`.
 

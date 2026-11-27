@@ -58,6 +58,7 @@
             (list 'thunder #f)           ; thunder sounds: near-1 near-2 far-1 far-2
             (list 'scene-light #f)       ; (sky ambient cloud-light) before any flash
             (list 'flash-shown 0.0)      ; lightning brightness last shown
+            (list 'precip-drift (list 0.0 0.0))  ; how far the wind has blown the rain, see `blow-precipitation!`
             (list 'hud #f)               ; (shadow text shown) coordinates readout, see `make-hud!`
             ;; (cover precipitation snow wetness snow-cover), see (world weather)
             (list 'weather (list 0.0 0.0 0.0 0.0 0.0))

@@ -7,7 +7,8 @@ uniform vec3 eye;          // world position of the entity, which follows the ca
 uniform vec3 box;          // size of the box of drops around it
 uniform float intensity;   // 0 nothing to 1 a downpour
 uniform float snow;        // 0 rain to 1 snow
-uniform vec2 wind;         // direction (x z) the wind blows
+uniform vec2 rain_wind;    // how fast (x z, m/s) the wind carries the drops now
+uniform vec2 rain_drift;   // how far (x z) the wind has carried them so far
 uniform vec3 eye_velocity; // how fast the camera is moving (m/s)
 
 in vec4 p3d_Vertex;          // the drop's spot in the box, same for all four corners
@@ -21,19 +22,25 @@ void main() {
     float t = osg_FrameTime;
     float r = p3d_Color.r;
     float speed = mix(9.0, 1.2, snow) * (0.8 + 0.4 * p3d_Color.g);
-    vec3 velocity = vec3(wind.x, 0.0, wind.y) * mix(2.0, 0.8, snow) + vec3(0.0, -speed, 0.0);
     vec3 sway = snow * 0.4 * vec3(sin(t * 1.3 + r * 40.0), 0.0, cos(t * 1.1 + r * 30.0));
+    // Gusts sweep through, pushing the drops they reach harder for a moment.
+    float gust_phase = t * 0.6 + dot(p3d_Vertex.xz, vec2(0.08, 0.05));
+    vec3 wind = vec3(rain_wind.x, 0.0, rain_wind.y);
+    vec3 gust = wind * 0.4 * sin(gust_phase);
+    vec3 velocity = wind * (1.0 + 0.24 * cos(gust_phase)) + vec3(0.0, -speed, 0.0);
 
     // Drops move through the world, not with the camera, and wrap around
-    // inside the box as it follows the camera.
-    vec3 world = p3d_Vertex.xyz + velocity * t + sway;
+    // inside the box as it follows the camera. The wind's push is summed up
+    // on the CPU (`rain_drift`), so the drops don't jump when it changes.
+    vec3 world = p3d_Vertex.xyz + vec3(rain_drift.x, -speed * t, rain_drift.y) + gust + sway;
     vec3 local = mod(world - eye + box * 0.5, box) - box * 0.5;
 
     // A streak (rain) or a small square (snow), turned to face the camera,
     // and nothing at all above the current intensity. Streaks lie along the
     // drop's motion as the moving eye sees it, and stretch with it: walking
-    // into the rain, the drops ahead rush up and past, not down.
-    vec3 seen = velocity - eye_velocity;
+    // into the rain, the drops ahead rush up and past, not down. Only half
+    // the eye's own speed counts, or a walk tilts them too far.
+    vec3 seen = velocity - 0.5 * eye_velocity;
     vec3 along = normalize(seen);
     vec3 side = normalize(cross(along, local + vec3(1e-3)));
     float size = step(r, intensity);

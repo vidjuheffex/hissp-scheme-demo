@@ -582,7 +582,8 @@
         (call-method precipitation 'set-depth-write #f)
         (call-method precipitation 'hide 1)
         (call-method precipitation 'set-shader-input "box" (rgb PRECIP-BOX))
-        (call-method precipitation 'set-shader-input "wind" (rgb WIND))
+        (call-method precipitation 'set-shader-input "rain_wind" (make-tuple 0.0 0.0))
+        (call-method precipitation 'set-shader-input "rain_drift" (make-tuple 0.0 0.0))
         (call-method precipitation 'set-shader-input "eye_velocity" (make-tuple 0.0 0.0 0.0))
         (state-set! 'sky (list sky clouds precipitation))))
 
@@ -1245,7 +1246,29 @@
                 (amount (cadr now-weather)))
             (attribute-set! precipitation 'enabled (> amount 0.01))
             (call-method precipitation 'set-shader-input "intensity" amount)
-            (call-method precipitation 'set-shader-input "snow" (list-ref now-weather 2))))))
+            (call-method precipitation 'set-shader-input "snow" (list-ref now-weather 2))
+            (blow-precipitation! precipitation wind (list-ref now-weather 2) dt)))))
+
+    ;; Meters a second the wind pushes rain and snow sideways, per unit of
+    ;; wind (about 1 a breeze, 2.5 a storm). Snow is light and blows far
+    ;; more for how slowly it falls.
+    (define RAIN-PUSH 3.0)
+    (define SNOW-PUSH 1.0)
+
+    ;; Hands the rain shader how fast the wind carries the drops, and adds up
+    ;; how far it has carried them (wrapped to the box they fill).
+    (define (blow-precipitation! precipitation wind snow dt)
+      (let* ((push (* wind (+ RAIN-PUSH (* (- SNOW-PUSH RAIN-PUSH) snow))))
+             (velocity (map (lambda (w) (* w push)) WIND))
+             (drift (map (lambda (d v size)
+                           (let ((x (+ d (* v dt))))
+                             (- x (* size (floor (/ x size))))))
+                         (state-ref 'precip-drift)
+                         velocity
+                         (list (car PRECIP-BOX) (list-ref PRECIP-BOX 2)))))
+        (state-set! 'precip-drift drift)
+        (call-method precipitation 'set-shader-input "rain_wind" (apply make-tuple velocity))
+        (call-method precipitation 'set-shader-input "rain_drift" (apply make-tuple drift))))
 
     ;; Start on the weather that belongs at (x, z), rather than clearing up
     ;; or clouding over during the first seconds.
