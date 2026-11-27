@@ -14,12 +14,14 @@ uniform vec3 ambient_color;
 uniform float fog_end;
 uniform float shadow_bias;
 uniform float rain;              // 0 dry to 1 a downpour
+uniform float wind_speed;        // about 1 a breeze, 0 dead calm
 uniform float overcast;          // greys the sky gradient
 uniform float precipitation;     // darkens the clouds
 uniform vec3 cloud_light_color;  // sun or moon light on the clouds
 uniform vec3 to_light;           // world direction toward the shadow light (sun or moon)
 
 #include "clouds.glsl"
+#include "stars.glsl"
 
 in vec3 world_pos;
 in vec3 view_pos;
@@ -46,12 +48,21 @@ vec3 noise_grad(vec2 p) {
 
 // Slope (dh/dx, dh/dz) of the surface: a long swell under wind chop, the
 // chop in two layers drifting different ways so it never repeats. `detail`
-// (0 to 1) fades the finest chop, which far off would only shimmer.
+// (0 to 1) fades the finest chop, which far off would only shimmer. The
+// wind raises the chop; in a dead calm only a faint swell is left, and the
+// water mirrors the sky.
+// How much of the swell is left in a wind of `w`: hardly any in a calm.
+float swell(float w) {
+    return mix(0.02, 1.0, min(w * w, 1.0));
+}
+
 vec2 wave_slope(vec2 p, float t, float detail) {
+    float w = min(wind_speed, 1.6);
+    float chop = w * sqrt(w);
     vec2 d1 = normalize(vec2(1.0, 0.3));
     vec2 d2 = normalize(vec2(-0.4, 1.0));
-    vec2 s = d1 * cos(dot(d1, p) * 0.35 + t * 0.95) * 0.018
-           + d2 * cos(dot(d2, p) * 0.6 + t * 1.25) * 0.018;
+    vec2 s = (d1 * cos(dot(d1, p) * 0.35 + t * 0.95) * 0.018
+            + d2 * cos(dot(d2, p) * 0.6 + t * 1.25) * 0.018) * swell(w);
     mat2 turn = mat2(0.8, -0.6, 0.6, 0.8);
     for (int layer = 0; layer < 2; ++layer) {
         vec2 flow = layer == 0 ? vec2(0.55, 0.2) : vec2(-0.25, 0.45);
@@ -61,7 +72,7 @@ vec2 wave_slope(vec2 p, float t, float detail) {
         for (int i = 0; i < 4; ++i) {
             vec2 q = m * p * freq + flow * t * (1.0 + 0.3 * float(i)) + float(i * 7 + layer * 3);
             vec2 g = noise_grad(q).yz;
-            s += amp * freq * (g * m) * (i < 2 ? 1.0 : detail);
+            s += amp * freq * (g * m) * (i < 2 ? 1.0 : detail) * chop;
             m = turn * m;
             freq *= 2.1;
             amp *= 0.5;
@@ -97,11 +108,16 @@ vec2 ripple_slope(vec2 p, float t) {
 }
 
 // The sky seen along world direction `d` from point `p`: the same gradient
-// as sky.frag and the same clouds as clouds.frag, simplified.
-vec3 sky_toward(vec3 d, vec3 p) {
+// and stars as sky.frag and the same clouds as clouds.frag, simplified.
+// `pixel` is the angle one pixel's worth of `d` covers, for the stars.
+vec3 sky_toward(vec3 d, vec3 p, float pixel) {
     vec3 horizon = fog_color.rgb;
     vec3 zenith = horizon * vec3(0.62, 0.78, 1.0);
     vec3 color = mix(horizon, mix(zenith, horizon, overcast), smoothstep(0.0, 0.6, d.y));
+    // Brighter than in the sky: a few percent of starlight off the water
+    // would be lost against the dark, where an eye used to it still sees it.
+    if (stars > 0.0 && d.y > 0.0)
+        color += starlight(d, pixel, osg_FrameTime) * star_visibility(color) * 3.0;
     if (d.y > 0.02) {
         float t = (CLOUD_ALTITUDE - p.y) / d.y;
         float n = cloud_field(p.xz + d.xz * t, 4);
@@ -165,11 +181,15 @@ void main() {
     // fresnel). Rays bent down by the waves would hit water; mirror them up.
     vec3 R = reflect(-V, N);
     R.y = abs(R.y);
+    // Waves spread a pixel's reflection over more sky, smearing the stars,
+    // and over time too: any chop at all moves it about from frame to frame.
+    float w = min(wind_speed, 1.6);
+    float pixel = max(length(fwidth(R)) * 0.8, 0.2 * w * sqrt(w) + 0.05 * swell(w));
     float fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    vec3 color = mix(body, sky_toward(R, world_pos), fresnel);
+    vec3 color = mix(body, sky_toward(R, world_pos, pixel), fresnel);
     // Looking down, the water reflects too little for tilted ripples to
     // show by reflection alone; their crests catch the sky light.
-    color += sky_toward(vec3(0.0, 1.0, 0.0), world_pos) * min(length(ripples), 1.0) * 0.3;
+    color += sky_toward(vec3(0.0, 1.0, 0.0), world_pos, 1.0) * min(length(ripples), 1.0) * 0.3;
 
     // Sun glint.
     float rv = max(dot(reflect(-L, N), V), 0.0);

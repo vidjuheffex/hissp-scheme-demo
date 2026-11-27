@@ -5,6 +5,7 @@ uniform mat4 p3d_ModelViewMatrix;
 uniform mat4 p3d_ModelMatrix;
 uniform mat4 p3d_ProjectionMatrix;
 uniform float osg_FrameTime;
+uniform float wind_speed;  // about 1 a breeze, 0 dead calm
 
 uniform struct {
     vec4 position;
@@ -40,7 +41,7 @@ void main() {
     float t = osg_FrameTime;
     float gust = sin(t * 1.3 + wp.x * 0.11 + wp.z * 0.07) * 0.7
                + sin(t * 3.1 + wp.x * 0.43 - wp.z * 0.31) * 0.3;
-    v.xz += vec2(0.8, 0.5) * gust * 0.18 * lift * grow;
+    v.xz += vec2(0.8, 0.5) * gust * 0.18 * min(wind_speed, 1.8) * lift * grow;
 
     vec4 vp = p3d_ModelViewMatrix * v;
     gl_Position = p3d_ProjectionMatrix * vp;

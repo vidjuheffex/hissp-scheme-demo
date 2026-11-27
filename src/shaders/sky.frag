@@ -4,6 +4,9 @@ uniform vec3 sky_color;   // at the horizon, where it meets the fog
 uniform vec3 to_sun;      // world-space direction toward the sun
 uniform vec3 sun_color;   // sunlight now: warm at dusk, black at night
 uniform float overcast;   // 0 clear to 1 fully overcast
+uniform float osg_FrameTime;
+
+#include "stars.glsl"
 
 in vec3 dir;
 
@@ -20,6 +23,9 @@ void main() {
     // Glow around the sun.
     float s = max(dot(d, to_sun), 0.0);
     color += sun_color * (0.25 * pow(s, 12.0) + 0.4 * pow(s, 200.0)) * (1.0 - overcast);
+
+    if (stars > 0.0 && d.y > 0.0)
+        color += starlight(d, length(fwidth(d)) * 0.8, osg_FrameTime) * star_visibility(color);
 
     frag_color = vec4(color, 1.0);
 }

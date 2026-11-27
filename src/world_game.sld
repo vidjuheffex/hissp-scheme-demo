@@ -18,6 +18,7 @@
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
+;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
 ;;   (biome-here)                  biome weights under the player
 ;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
 ;;   (go-to! 500 -200)             move the player
@@ -118,7 +119,7 @@
 
     ;; Files that shaders share with `#include "name"`; GLSL has no includes
     ;; of its own, so the line is replaced by the file's text.
-    (define SHADER-INCLUDES (list "clouds.glsl"))
+    (define SHADER-INCLUDES (list "clouds.glsl" "stars.glsl"))
 
     (define (read-shader-source file)
       (let loop ((source (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
@@ -662,11 +663,13 @@
     ;; falling. Returns
     ;;   (light-direction light-color sky-color ambient-color
     ;;    sun-direction moon-direction glare sun-glow overcast
-    ;;    cloud-light-direction cloud-light-color)
+    ;;    cloud-light-direction cloud-light-color stars)
     ;; `glare` (0 to 1) is how much daylight washes out the moon: most with
     ;; the sun high, less near sunrise and sunset, none at night. Overcast
     ;; turns the sky grey and hides the sun's glow; rain darkens it more. It
     ;; doesn't dim the light itself: shaders shade what's under a cloud.
+    ;; `stars` (0 to 1) is how bright the stars are: out once the sky darkens,
+    ;; washed out by a bright moon, gone under overcast or rain.
     ;; Clouds are lit by the light above them, and being high up they keep the
     ;; sunset's light a while after it has left the ground.
     ;; Directions are the way the light travels (the body sits the opposite
@@ -720,7 +723,11 @@
               (if sun-on-clouds? sun-dir moon-dir)
               (if sun-on-clouds?
                   (scale-list sun-tint (smooth-step -0.2 0.05 height))
-                  moon-color))))
+                  moon-color)
+              (* (- 1.0 (smooth-step -0.25 -0.03 height))
+                 (- 1.0 (* 0.75 moonlight))
+                 (- 1.0 overcast)
+                 (- 1.0 precipitation)))))
 
     (define (current-phase)
       (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
@@ -738,6 +745,9 @@
           (let* ((scene (scene-at hours (current-phase) cover precipitation))
                  (sky (list-ref scene 2))
                  (sun-dir (list-ref scene 4))
+                 ;; The stars turn with the sun, and a little further each
+                 ;; day through the year.
+                 (star-angle (+ (sun-angle hours) (* 2.0 PI (/ (state-ref 'day) 365.25))))
                  (moon (state-ref 'moon))
                  (domes (state-ref 'sky)))
             (state-set! 'light-dir (car scene))
@@ -759,7 +769,9 @@
                           (list (list "sky_color" (rgb sky))
                                 (list "to_sun" (rgb (scale-list sun-dir -1.0)))
                                 (list "sun_color" (rgb (list-ref scene 7)))
-                                (list "overcast" (list-ref scene 8))))
+                                (list "overcast" (list-ref scene 8))
+                                (list "stars" (list-ref scene 11))
+                                (list "star_angle" star-angle)))
                 (for-each (lambda (input)
                             (call-method clouds 'set-shader-input (car input) (cadr input)))
                           (list (list "sky_color" (rgb sky))
@@ -777,8 +789,10 @@
             (set-input! "fog_end" (* FOG-END (- 1.0 (* 0.5 precipitation))))
             (set-input! "to_light" (rgb (scale-list (car scene) -1.0)))
             (set-input! "cover" cover)
-            ;; For the sky and clouds the water reflects.
+            ;; For the sky, stars and clouds the water reflects.
             (set-input! "overcast" (list-ref scene 8))
+            (set-input! "stars" (list-ref scene 11))
+            (set-input! "star_angle" star-angle)
             (set-input! "precipitation" precipitation)
             (set-input! "cloud_light_color" (rgb (list-ref scene 10)))
             (set-input! "ambient_color" (rgb (list-ref scene 3)))))))
@@ -843,9 +857,15 @@
              (now-weather (weather-step (state-ref 'weather) target dt))
              (drift (map (lambda (d w) (+ d (* w CLOUD-SPEED dt)))
                          (state-ref 'cloud-drift) WIND))
+             (wind (if (state-ref 'wind-override)
+                       (state-ref 'wind-override)
+                       (wind-speed (weather-days) (sin (sun-angle (state-ref 'time-of-day)))
+                                   (car now-weather) (cadr now-weather))))
              (sky (state-ref 'sky)))
         (state-set! 'weather now-weather)
         (state-set! 'cloud-drift drift)
+        (state-set! 'wind wind)
+        (set-input! "wind_speed" wind)
         (set-input! "wetness" (list-ref now-weather 3))
         (set-input! "rain" (* (cadr now-weather) (- 1.0 (list-ref now-weather 2))))
         (set-input! "drift" (apply make-tuple drift))
@@ -866,8 +886,8 @@
                                           (state-ref 'weather-override))
                           (list 0.0 0.0))))
 
-    ;; REPL: `(weather)` => (cover precipitation kind wetness snow-cover),
-    ;; e.g. (0.82 0.4 "rain" 0.6 0.0).
+    ;; REPL: `(weather)` => (cover precipitation kind wetness snow-cover wind),
+    ;; e.g. (0.82 0.4 "rain" 0.6 0.0 1.3).
     (define (weather)
       (let ((w (state-ref 'weather))
             (round2 (lambda (x) (/ (round (* 100.0 x)) 100.0))))
@@ -875,7 +895,13 @@
               (round2 (cadr w))
               (if (> (list-ref w 2) 0.5) "snow" "rain")
               (round2 (list-ref w 3))
-              (round2 (list-ref w 4)))))
+              (round2 (list-ref w 4))
+              (round2 (state-ref 'wind)))))
+
+    ;; REPL: `(set-wind! 0)` makes it dead calm (glassy water), `(set-wind! 1.5)`
+    ;; a gale, `(set-wind! #f)` lets the wind run by itself again.
+    (define (set-wind! speed)
+      (state-set! 'wind-override speed))
 
     ;; REPL: `(set-weather! 1.0)` brings a storm wherever you are,
     ;; `(set-weather! 0)` clears the sky, `(set-weather! #f)` lets the
@@ -1070,7 +1096,7 @@
             "shaders/grass.vert" "shaders/grass.frag"
             "shaders/plant.vert" "shaders/plant.frag"
             "shaders/moon.vert" "shaders/moon.frag"
-            "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl"
+            "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl" "shaders/stars.glsl"
             "shaders/precip.vert" "shaders/precip.frag"))
     (define WATCHED-FILES
       (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_game.sld")

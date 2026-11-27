@@ -36,7 +36,7 @@
             (list 'last-poll 0.0)
             (list 'last-error "")
             (list 'time-of-day 10.0)     ; hours, 0 <= t < 24
-            (list 'day-length 240.0)     ; real seconds per in-game day; 0 freezes
+            (list 'day-length 1800.0)     ; real seconds per in-game day; 0 freezes
             (list 'day 10)               ; days since a new moon; +1 each midnight
             (list 'last-tick 0.0)
             (list 'applied-time #f)      ; time the scene was last lit for
@@ -48,6 +48,8 @@
             ;; (cover precipitation snow wetness snow-cover), see (world weather)
             (list 'weather (list 0.0 0.0 0.0 0.0 0.0))
             (list 'weather-override #f)  ; cloud cover forced from the REPL
+            (list 'wind 1.0)             ; wind speed now, see `wind-speed`
+            (list 'wind-override #f)     ; wind speed forced from the REPL
             (list 'cloud-drift (list 0.0 0.0))  ; meters the clouds have moved
             (list 'repl-busy #f)         ; a REPL line is waiting to be evaluated
             (list 'player #f)

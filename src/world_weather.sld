@@ -12,6 +12,7 @@
   (export WIND
           PRECIP-BOX
           weather-target
+          wind-speed
           weather-step
           precipitation-mesh)
   (import (scheme base)
@@ -52,6 +53,20 @@
              (snow (max (smooth-step 0.3 0.6 (list-ref w 2))
                         (smooth-step 30.0 38.0 height))))
         (list cover precipitation snow)))
+
+    ;; How hard the wind blows at `days`, with the sun at `height` (-1
+    ;; midnight to 1 noon) under the scene's `cover` and `precipitation`:
+    ;; about 1 for an ordinary breeze, down near 0 when dead calm. Breezy and
+    ;; still spells come and go over the days; nights are calmer, as the air
+    ;; settles once the ground cools, so clear nights often go glassy;
+    ;; storms blow hardest.
+    (define (wind-speed days height cover precipitation)
+      (let* ((t (+ (* days 3.0) (* 0.001 (cadr (seed-offset)))))
+             (spell (+ 0.2 (* 1.1 (smooth-step 0.25 0.75 (value-noise t 53.9)))))
+             (night (- 1.0 (smooth-step -0.2 0.1 height))))
+        (+ (* spell (- 1.0 (* 0.75 night)))
+           (* 0.6 cover cover)
+           (* 0.8 precipitation))))
 
     ;; `x` moved toward `target` over `dt` seconds, covering most of the
     ;; way in about 3 / `rate` seconds.

@@ -6,6 +6,7 @@ uniform mat4 p3d_ModelMatrix;
 uniform mat4 p3d_ViewMatrix;
 uniform mat3 p3d_NormalMatrix;
 uniform float osg_FrameTime;
+uniform float wind_speed;  // about 1 a breeze, 0 dead calm
 
 uniform struct {
     vec4 position;
@@ -42,10 +43,11 @@ void main() {
         float phase = dot(floor(wp.xz / 6.4), vec2(1.7, 2.3));
         float t = osg_FrameTime;
         float sway = (sin(t * 0.9 + phase) + 0.4 * sin(t * 2.1 + phase * 1.3)) * 0.0012 * h * h;
-        v.xz += vec2(0.8, 0.6) * sway;
+        float wind = min(wind_speed, 1.8);
+        v.xz += vec2(0.8, 0.6) * sway * wind;
         // Leaves flutter.
         if (material == FOLIAGE)
-            v.xyz += 0.025 * sin(t * 4.0 + dot(wp, vec3(2.1, 1.7, 2.9))) * p3d_Normal;
+            v.xyz += 0.025 * wind * sin(t * 4.0 + dot(wp, vec3(2.1, 1.7, 2.9))) * p3d_Normal;
     }
     vec4 vp = p3d_ModelViewMatrix * v;
     gl_Position = p3d_ModelViewProjectionMatrix * v;

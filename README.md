@@ -58,8 +58,9 @@ Type Scheme into the terminal that started the game, one form per line:
 (set-day-length! 0)        ; freeze the clock (60 = a day per minute)
 (moon-phase)               ; day count, phase name, lit fraction
 (set-day! 15)              ; jump the moon's cycle (0 new, 7 first quarter, 15 full)
-(weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover
+(weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover, wind
 (set-weather! 1.0)         ; force the cloud cover: 1 storm, 0 clear; #f to let it run
+(set-wind! 0)              ; force the wind: 0 dead calm, 1 breeze; #f to let it run
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
 (go-to! 500 -200)          ; move the player
@@ -67,11 +68,12 @@ Type Scheme into the terminal that started the game, one form per line:
 (reload!)                  ; force-reload everything
 ```
 
-The clock starts at 10:00 and runs a full day in 4 minutes. `scene-at` in
+The clock starts at 10:00 and runs a full day in 30 minutes
+(`(set-day-length! seconds)` changes it). `scene-at` in
 `src/world_game.sld` holds the sun, moon, sky and ambient colours for each hour.
 
 The moon goes through real phases, 29.5 in-game days from new moon to new
-moon (about two hours of play), starting on day 10. Like the real moon it
+moon (about 15 hours of play), starting on day 10. Like the real moon it
 trails the sun across the sky by its phase: a full moon rises at sunset and
 lights the whole night, a new moon is up by day and leaves the night dark,
 and the quarters are up for half the night. At night the shadow-casting light
@@ -80,10 +82,15 @@ and ambient colours (`MOON-COLOR`, `MOON-BRIGHTNESS`, `SKY-MOONLIT`,
 `AMBIENT-NEW-MOON`, `AMBIENT-FULL-MOON`) are at the top of
 `src/world_game.sld`.
 
+Stars and the Milky Way come out as the sky darkens, drawn in `sky.frag`.
+They wheel across the sky with the sun's path, rising and setting through the
+night, and shift a little further each day through the year. A bright moon
+washes most of them out, clouds hide them, and they dim and twinkle low down.
+
 ## Weather
 
 Cloud cover drifts between clear and overcast over game time, about twice a
-day (a couple of minutes of play), different in every world. Deserts get half
+day (every 15 minutes or so of play), different in every world. Deserts get half
 the cloud and little rain. When cover is heavy it rains, or snows in the snowy
 biome and above 30 m. Clouds cast shadows that drift across the land (by
 moonlight too), so overcast is shade everywhere; it also greys the sky, and
@@ -92,7 +99,12 @@ ground, which dries over a minute or two; fresh
 snow settles on flat ground and brings the snow line down the mountains, then
 melts over a few minutes.
 
-The sky is two domes around the camera: `sky.frag` (gradient and sun glow)
+The wind (`wind-speed` in `src/world_weather.sld`) has breezy and still spells
+of its own, drops at night and picks up in storms. It sets how much the grass
+and trees sway and how choppy the water is: on a still, clear night lakes go
+glassy and mirror the stars.
+
+The sky is two domes around the camera: `sky.frag` (gradient, sun glow, stars)
 behind the sun and moon, and `clouds.frag` (noise on a layer at 520 m,
 drifting with the wind) over them. The layer itself is in
 `src/shaders/clouds.glsl`, which the ground, grass, plant and water shaders
