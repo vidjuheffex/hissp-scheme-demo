@@ -16,6 +16,9 @@ uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 uniform float wetness;      // 0 dry to 1 soaked by rain
 
 #include "clouds.glsl"
+#include "mist.glsl"
+
+uniform mat4 p3d_ViewMatrixInverse;
 
 in vec3 albedo;
 in vec2 plant;   // x: material (whole part) + across (fraction); y: height above base
@@ -234,5 +237,7 @@ void main() {
     vec3 lit = color * (light + glow) + sun * spec;
 
     float fog = smoothstep(fog_end * 0.3, fog_end, dist);
-    frag_color = vec4(mix(lit, fog_color.rgb, fog), 1.0);
+    lit = mix(lit, fog_color.rgb, fog);
+    lit = mix(lit, mist_color(fog_color.rgb), mist_between(p3d_ViewMatrixInverse[3].xyz, world_pos));
+    frag_color = vec4(lit, 1.0);
 }

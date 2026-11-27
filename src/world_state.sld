@@ -52,6 +52,12 @@
             (list 'eye-motion #f)        ; (time position velocity) of the camera, see `eye-velocity!`
             (list 'bloom #f)             ; (days amounts) wildflower bloom, see `update-blooms!`
             (list 'bloom-override #f)    ; blooms forced from the REPL
+            (list 'mist 0.0)             ; valley mist now, see `update-mist!`
+            (list 'mist-override #f)     ; mist forced from the REPL
+            (list 'storm (list '() '())) ; (flash-pulses thunders-due), see `strike!`
+            (list 'thunder #f)           ; thunder sounds: near-1 near-2 far-1 far-2
+            (list 'scene-light #f)       ; (sky ambient cloud-light) before any flash
+            (list 'flash-shown 0.0)      ; lightning brightness last shown
             (list 'hud #f)               ; (shadow text shown) coordinates readout, see `make-hud!`
             ;; (cover precipitation snow wetness snow-cover), see (world weather)
             (list 'weather (list 0.0 0.0 0.0 0.0 0.0))

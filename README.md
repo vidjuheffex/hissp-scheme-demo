@@ -35,9 +35,10 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   and trees (surface detail, swaying, snow on branches), the moon
   (phase shading), the sky and clouds, rain and snow, wildlife, and the
   coordinates readout's text; `clouds.glsl` is
-  the cloud layer, spliced into every shader with `#include "clouds.glsl"`
+  the cloud layer, spliced into every shader with `#include "clouds.glsl"` (and
+  likewise `stars.glsl` and `mist.glsl`)
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
-- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water) and footsteps, synthesized by
+- `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water), footsteps and thunder, synthesized by
   `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
 - `assets/fonts/` — Lexend Deca (Regular instance of the variable font, SIL Open Font
   License in `OFL.txt`) for the coordinates readout
@@ -112,6 +113,19 @@ The wind (`wind-speed` in `src/world_weather.sld`) has breezy and still spells
 of its own, drops at night and picks up in storms. It sets how much the grass
 and trees sway and how choppy the water is: on a still, clear night lakes go
 glassy and mirror the stars.
+
+Thunderstorms (heavy cloud and rain, not snow) throw lightning now and then:
+the sky, clouds and light flash in a few quick pulses, brighter for nearer
+strikes, and the thunder arrives later the farther off it struck (about 3
+seconds a kilometer), with a sharp crack only when it's close. `(strike! 1.0)`
+in the REPL sends a bolt a kilometer away.
+
+On calm mornings, some more than others and more after rain, mist gathers in
+the small hours and pools in the low ground: it's thickest at sea level and
+thins out a few meters up, so from a hilltop the valleys below are filled
+with it. It burns off as the sun climbs, and deserts are too dry for it
+(`mist-amount` in `src/world_weather.sld`; the fog itself is
+`src/shaders/mist.glsl`). `(set-mist! 0.8)` forces it, `#f` undoes.
 
 The sky is two domes around the camera: `sky.frag` (gradient, sun glow, stars)
 behind the sun and moon, and `clouds.frag` (noise on a layer at 520 m,

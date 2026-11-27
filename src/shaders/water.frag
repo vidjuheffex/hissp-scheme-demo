@@ -22,6 +22,7 @@ uniform vec3 to_light;           // world direction toward the shadow light (sun
 
 #include "clouds.glsl"
 #include "stars.glsl"
+#include "mist.glsl"
 
 in vec3 world_pos;
 in vec3 view_pos;
@@ -215,5 +216,8 @@ void main() {
     float fog = smoothstep(fog_end * 0.3, fog_end, dist);
     color = mix(color, fog_color.rgb, fog);
     alpha = mix(alpha, 1.0, fog * max(edge, foam));
+    float misty = mist_between(eye, world_pos);
+    color = mix(color, mist_color(fog_color.rgb), misty);
+    alpha = mix(alpha, 1.0, misty * edge);
     frag_color = vec4(color, alpha);
 }

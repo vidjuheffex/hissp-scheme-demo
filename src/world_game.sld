@@ -21,6 +21,8 @@
 ;;   (sounds)                      ambient loop volumes: wind rain birds crickets water
 ;;   (wildflowers)                 bloom of daisies, spikes, poppies, desert flowers
 ;;   (set-blooms! '(1 1 1 1))      force the blooms (0 to 1 each); #f undoes
+;;   (set-mist! 0.8)               force the valley mist (0 to 1); #f undoes
+;;   (strike! 1.0)                 lightning that many km away (thunder follows)
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
 ;;   (biome-here)                  biome weights under the player
@@ -36,6 +38,7 @@
     (scheme python)
     (only (scheme write) display write)
     (srfi 18)
+    (only (srfi 1) filter)
     (srfi 69)
     (srfi 177)
     (only sys argv)
@@ -125,7 +128,7 @@
 
     ;; Files that shaders share with `#include "name"`; GLSL has no includes
     ;; of its own, so the line is replaced by the file's text.
-    (define SHADER-INCLUDES (list "clouds.glsl" "stars.glsl"))
+    (define SHADER-INCLUDES (list "clouds.glsl" "stars.glsl" "mist.glsl"))
 
     (define (read-shader-source file)
       (let loop ((source (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
@@ -996,6 +999,8 @@
                 (call-method (list-ref domes 2) 'set-shader-input "light_color"
                              (rgb (scale-list (list-ref scene 1) (- 1.0 (* 0.75 cover)))))
                 (call-method (list-ref domes 2) 'set-shader-input "ambient_color" ambient)))
+            (state-set! 'scene-light (list sky (list-ref scene 3) (list-ref scene 10)))
+            (state-set! 'flash-shown 0.0)
             (attribute-set! window 'color (rgba sky))
             (set-input! "fog_color" (rgba sky))
             (set-input! "fog_end" (* FOG-END (- 1.0 (* 0.5 precipitation))))
@@ -1062,6 +1067,132 @@
 
     (define (weather-days)
       (+ (state-ref 'day) (/ (state-ref 'time-of-day) 24.0)))
+
+    ;; --- valley mist -------------------------------------------------------
+
+    ;; Seconds for the mist to get most of the way to a new thickness.
+    (define MIST-FADE 20.0)
+
+    ;; Eases the mist toward what it should be where the player is (see
+    ;; `mist-amount`), and hands it to the shaders.
+    (define (update-mist! x z dt)
+      (let* ((weather (state-ref 'weather))
+             (hours (state-ref 'time-of-day))
+             (target (or (state-ref 'mist-override)
+                         (mist-amount (weather-days) hours (sin (sun-angle hours))
+                                      (state-ref 'wind) (list-ref weather 3) (cadr weather)
+                                      (biome-weights x z))))
+             (now-mist (+ (state-ref 'mist)
+                          (* (- target (state-ref 'mist))
+                             (- 1.0 (exp (/ (* -3.0 dt) MIST-FADE))))))
+             (sky (state-ref 'sky)))
+        (state-set! 'mist now-mist)
+        (set-input! "mist" now-mist)
+        (when sky (call-method (car sky) 'set-shader-input "mist" now-mist))))
+
+    ;; REPL: `(set-mist! 0.8)` forces the mist (0 to 1), settling at once;
+    ;; `(set-mist! #f)` undoes.
+    (define (set-mist! amount)
+      (state-set! 'mist-override amount)
+      (when amount (state-set! 'mist amount)))
+
+    ;; --- lightning -------------------------------------------------------
+
+    ;; Strikes a second in the heaviest storm, on average.
+    (define STRIKE-RATE 0.12)
+    ;; What a full flash adds to the sky and to the ambient light.
+    (define FLASH-SKY (list 0.55 0.58 0.72))
+    (define FLASH-LIGHT (list 1.5 1.6 1.9))
+    ;; Seconds sound takes to cover a kilometer.
+    (define SOUND-DELAY 2.9)
+
+    (define (make-thunder!)
+      (state-set! 'thunder
+                  (map (lambda (name)
+                         (call/kw Audio
+                                  (sound_file_name (Path (asset-path "assets" "sounds"
+                                                                     (string-append "thunder-" name ".ogg")))
+                                   autoplay #f
+                                   auto_destroy #f
+                                   group "ambient")))
+                       (list "near-1" "near-2" "far-1" "far-2"))))
+
+    ;; Lightning `km` away: a flash of a few quick pulses, brighter nearer,
+    ;; and the thunder on its way.
+    (define (strike! km)
+      (let* ((t (now))
+             (strength (min 1.0 (/ 1.4 (+ km 0.3))))
+             (pulses (let loop ((k (+ 1 (randrange 3))) (at t) (acc '()))
+                       (if (= k 0)
+                           acc
+                           (let ((length (+ 0.06 (* 0.1 (random)))))
+                             (loop (- k 1)
+                                   (+ at length (* 0.12 (random)))
+                                   (cons (list at length (* strength (+ 0.5 (* 0.5 (random)))))
+                                         acc))))))
+             (storm (state-ref 'storm)))
+        (state-set! 'storm
+                    (list (append pulses (car storm))
+                          (cons (list (+ t (* km SOUND-DELAY))
+                                      (+ (if (< km 1.5) 0 2) (randrange 2))
+                                      (min 1.0 (/ 1.2 (+ km 0.2))))
+                                (cadr storm))))
+        km))
+
+    ;; How bright the lightning is at time `t`: the strongest pulse lit then.
+    (define (flash-at pulses t)
+      (fold-left (lambda (best pulse)
+                   (let ((s (/ (- t (car pulse)) (cadr pulse))))
+                     (if (and (>= s 0.0) (< s 1.0))
+                         (max best (* (list-ref pulse 2) (square (- 1.0 s))))
+                         best)))
+                 0.0 pulses))
+
+    (define (fold-left f acc items)
+      (if (null? items) acc (fold-left f (f acc (car items)) (cdr items))))
+
+    ;; Strikes now and then in a thunderstorm (not in snow), lights the scene
+    ;; up while a flash lasts, and plays the thunder when it arrives.
+    (define (update-storm! dt)
+      (let* ((weather (state-ref 'weather))
+             (storminess (* (cadr weather) (- 1.0 (list-ref weather 2))
+                            (smooth-step 0.7 0.95 (car weather)))))
+        (when (< (random) (* dt STRIKE-RATE storminess))
+          (strike! (+ 0.4 (* 5.6 (expt (random) 0.7))))))
+      (let* ((t (now))
+             (storm (state-ref 'storm))
+             (pulses (filter (lambda (p) (< t (+ (car p) (cadr p)))) (car storm)))
+             (due (filter (lambda (th) (>= t (car th))) (cadr storm)))
+             (thunder (state-ref 'thunder)))
+        (when thunder
+          (for-each (lambda (th)
+                      (let ((audio (list-ref thunder (cadr th))))
+                        (attribute-set! audio 'volume (list-ref th 2))
+                        (attribute-set! audio 'pitch (+ 0.9 (* 0.2 (random))))
+                        (call-method audio 'play)))
+                    due))
+        (state-set! 'storm (list pulses (filter (lambda (th) (< t (car th))) (cadr storm))))
+        (show-flash! (flash-at pulses t))))
+
+    ;; Brightens the sky, clouds, fog and ambient light by `flash` (0 to 1)
+    ;; over the hour's own, when it has changed since last frame.
+    (define (show-flash! flash)
+      (let ((light (state-ref 'scene-light))
+            (domes (state-ref 'sky)))
+        (when (and light (not (= flash (state-ref 'flash-shown))))
+          (state-set! 'flash-shown flash)
+          (let ((sky (map + (car light) (scale-list FLASH-SKY flash)))
+                (ambient (rgb (map + (cadr light) (scale-list FLASH-LIGHT flash)))))
+            (attribute-set! window 'color (rgba sky))
+            (set-input! "fog_color" (rgba sky))
+            (set-input! "ambient_color" ambient)
+            (when domes
+              (call-method (car domes) 'set-shader-input "sky_color" (rgb sky))
+              (call-method (cadr domes) 'set-shader-input "sky_color" (rgb sky))
+              (call-method (cadr domes) 'set-shader-input "ambient_color" ambient)
+              (call-method (cadr domes) 'set-shader-input "light_color"
+                           (rgb (map + (list-ref light 2) (scale-list FLASH-LIGHT flash))))
+              (call-method (list-ref domes 2) 'set-shader-input "ambient_color" ambient))))))
 
     ;; Recomputes how far into bloom the wildflowers are (see `blooms`)
     ;; when the clock has moved on a little, or jumped, and hands it to the
@@ -1392,6 +1523,8 @@
           (apply-time!)
           (update-life! x z)
           (update-sounds! x z dt)
+          (update-mist! x z dt)
+          (update-storm! dt)
           (update-walking! player x z bottom dt))
         ;; Stick the player to the ground (gravity is off on the controller),
         ;; wading on the bottom in the shallows.
@@ -1425,7 +1558,13 @@
         (lambda (input) (set-input! (car input) (cadr input)))
         (list (list "sea_level" SEA-LEVEL)
               (list "shadow_bias" SHADOW-BIAS)
-              (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))))
+              (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))
+              (list "mist_base" SEA-LEVEL)
+              (list "mist" (state-ref 'mist))))
+      (let ((sky (state-ref 'sky)))
+        (when sky
+          (call-method (car sky) 'set-shader-input "mist_base" SEA-LEVEL)
+          (call-method (car sky) 'set-shader-input "mist" (state-ref 'mist))))
       (state-set! 'bloom #f)
       (update-blooms!)
       (state-set! 'applied-time #f)
@@ -1500,6 +1639,7 @@
             "shaders/plant.vert" "shaders/plant.frag"
             "shaders/moon.vert" "shaders/moon.frag"
             "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl" "shaders/stars.glsl"
+            "shaders/mist.glsl"
             "shaders/precip.vert" "shaders/precip.frag"
             "shaders/life.vert" "shaders/life.frag"))
     (define WATCHED-FILES
@@ -1720,6 +1860,7 @@
         (make-hud!)
         (make-sounds!)
         (make-footsteps!)
+        (make-thunder!)
         (settle-weather! 0 0)
         (state-set! 'last-tick (now))
         (apply-scene!)

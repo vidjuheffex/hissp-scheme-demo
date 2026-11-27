@@ -7,6 +7,9 @@ uniform float overcast;   // 0 clear to 1 fully overcast
 uniform float osg_FrameTime;
 
 #include "stars.glsl"
+#include "mist.glsl"
+
+uniform mat4 p3d_ViewMatrixInverse;
 
 in vec3 dir;
 
@@ -27,5 +30,8 @@ void main() {
     if (stars > 0.0 && d.y > 0.0)
         color += starlight(d, length(fwidth(d)) * 0.8, osg_FrameTime) * star_visibility(color);
 
+    // From inside the mist, the sky low down is lost in it.
+    vec3 eye = p3d_ViewMatrixInverse[3].xyz;
+    color = mix(color, mist_color(sky_color), mist_between(eye, eye + d * 250.0));
     frag_color = vec4(color, 1.0);
 }

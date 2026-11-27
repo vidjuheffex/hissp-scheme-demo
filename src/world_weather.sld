@@ -14,6 +14,7 @@
           weather-target
           wind-speed
           blooms
+          mist-amount
           weather-step
           precipitation-mesh)
   (import (scheme base)
@@ -68,6 +69,25 @@
         (+ (* spell (- 1.0 (* 0.75 night)))
            (* 0.6 cover cover)
            (* 0.8 precipitation))))
+
+    ;; --- valley mist ---------------------------------------------------------
+
+    ;; How thick the valley mist is, 0 to 1, at `days` and `hours`, with the
+    ;; sun at `height`, in `wind`, on ground `wetness` wet, under
+    ;; `precipitation`, where the biome weights are `weights`. Mist gathers
+    ;; in the small hours on calm mornings and burns off as the sun climbs;
+    ;; some mornings are misty and some aren't, more after rain. Deserts are
+    ;; too dry for it.
+    (define (mist-amount days hours height wind wetness precipitation weights)
+      (let ((gathering (if (< hours 12.0) (smooth-step 1.0 4.5 hours) 0.0))
+            (burning-off (- 1.0 (smooth-step 0.08 0.4 height)))
+            (calm (- 1.0 (smooth-step 0.4 1.1 wind)))
+            (misty-morning (smooth-step 0.35 0.6 (value-noise (floor days) 83.1))))
+        (* gathering burning-off calm
+           (min 1.0 (+ misty-morning wetness))
+           (- 1.0 (car weights))
+           (- 1.0 (* 0.5 (list-ref weights 2)))
+           (- 1.0 (smooth-step 0.1 0.4 precipitation)))))
 
     ;; --- wildflowers --------------------------------------------------------
 

@@ -17,6 +17,9 @@ uniform float shadow_bias;
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
 
 #include "clouds.glsl"
+#include "mist.glsl"
+
+uniform mat4 p3d_ViewMatrixInverse;
 
 in vec2 uv;
 in vec3 tint;
@@ -82,5 +85,7 @@ void main() {
     vec3 color = albedo * light;
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));
-    frag_color = vec4(mix(color, fog_color.rgb, fog), 1.0);
+    color = mix(color, fog_color.rgb, fog);
+    color = mix(color, mist_color(fog_color.rgb), mist_between(p3d_ViewMatrixInverse[3].xyz, world_pos));
+    frag_color = vec4(color, 1.0);
 }

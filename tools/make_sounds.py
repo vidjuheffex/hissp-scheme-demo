@@ -6,9 +6,13 @@ swells are periodic too, and events (drops, chirps, laps) that run past the
 end wrap around to the start. The game fades the loops in and out; see
 `update-sounds!` in src/world_game.sld.
 
-    uv run --no-project --with numpy --with soundfile tools/make_sounds.py
+    uv run --no-project --with numpy --with soundfile tools/make_sounds.py [names...]
+
+With names (wind, rain, birds, crickets, water, steps, thunder), only those
+are written.
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -279,12 +283,46 @@ def footstep(surface):
 FOOTSTEP_LOUDNESS = {"grass": 0.5, "dirt": 0.65, "rock": 0.6, "snow": 0.55, "water": 0.7}
 
 
+def thunder(near):
+    """A roll of thunder: a crack and ripping first if `near`, then rumbles."""
+    n = seconds(9.0)
+    t = np.arange(n) / RATE
+    # Rolling: a run of swells, each later one quieter.
+    roll = np.zeros(n)
+    at = 0.0 if near else rng.uniform(0.3, 0.8)
+    loud = 1.0
+    while at < 6.0:
+        rise, fall = rng.uniform(0.05, 0.3), rng.uniform(0.5, 1.6)
+        s = t - at
+        roll += loud * np.where(s < 0, 0, np.clip(s / rise, 0, 1) * np.exp(-np.maximum(s - rise, 0) / fall))
+        at += rng.uniform(0.4, 1.4)
+        loud *= rng.uniform(0.55, 0.9)
+    roll *= np.clip((n - np.arange(n)) / seconds(1.5), 0, 1)
+    out = shaped_noise(n, 22, 160 if not near else 260, -0.9) * roll
+    out += shaped_noise(n, 150, 500, -0.6) * roll * 0.25  # so small speakers hear it too
+    if near:
+        out += shaped_noise(n, 150, 1200, -0.5) * roll ** 2 * 0.35
+        m = seconds(1.0)
+        out[:m] += shaped_noise(m, 500, 9000, -0.3) * burst(m, 0.002, 0.07) * 1.8
+        for _ in range(rng.integers(4, 9)):  # ripping
+            m = seconds(rng.uniform(0.04, 0.12))
+            place(out, shaped_noise(m, 300, 4000, -0.4) * burst(m, 0.003, 0.03) * rng.uniform(0.5, 1.2),
+                  seconds(rng.uniform(0.02, 0.7)))
+    return reverb(out, 1.8, 0.3)
+
+
+def make(name, make_sound):
+    if len(sys.argv) < 2 or name in sys.argv[1:]:
+        make_sound()
+
+
 if __name__ == "__main__":
-    save("wind", wind())
-    save("rain", rain())
-    save("birds", birds())
-    save("crickets", crickets())
-    save("water", water())
-    for surface, loudness in FOOTSTEP_LOUDNESS.items():
-        for k in range(1, 5):
-            save(f"steps/{surface}-{k}", footstep(surface), loudness)
+    make("wind", lambda: save("wind", wind()))
+    make("rain", lambda: save("rain", rain()))
+    make("birds", lambda: save("birds", birds()))
+    make("crickets", lambda: save("crickets", crickets()))
+    make("water", lambda: save("water", water()))
+    make("steps", lambda: [save(f"steps/{surface}-{k}", footstep(surface), loudness)
+                           for surface, loudness in FOOTSTEP_LOUDNESS.items() for k in range(1, 5)])
+    make("thunder", lambda: [save(f"thunder-{kind}-{k}", thunder(kind == "near"), 0.9)
+                             for kind in ("near", "far") for k in (1, 2)])
