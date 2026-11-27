@@ -24,16 +24,10 @@ wheels = [
 [[package]]
 name = "hissp-scheme"
 version = "0.1.0"
-source = { editable = "../hissp-scheme" }
+source = { git = "https://github.com/vidjuheffex/hissp-scheme?branch=main#2841f2030401d6e837716b4839e883f3c9cfba4e" }
 dependencies = [
     { name = "hissp" },
 ]
-
-[package.metadata]
-requires-dist = [{ name = "hissp", specifier = ">=0.5.0" }]
-
-[package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.15.12" }]
 
 [[package]]
 name = "hissp-scheme-game"
@@ -49,7 +43,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "hissp", specifier = ">=0.5.0" },
-    { name = "hissp-scheme", editable = "../hissp-scheme" },
+    { name = "hissp-scheme", git = "https://github.com/vidjuheffex/hissp-scheme?branch=main" },
     { name = "panda3d", specifier = "==1.11.0.dev3849", index = "https://archive.panda3d.org/simple" },
     { name = "ursina", git = "https://github.com/pokepetter/ursina?branch=master" },
 ]

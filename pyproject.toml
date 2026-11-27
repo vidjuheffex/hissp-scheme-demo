@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["main"]
 
 [tool.uv.sources]
-hissp-scheme = { path = "../hissp-scheme", editable = true }
+hissp-scheme = { git = "https://github.com/vidjuheffex/hissp-scheme", branch = "main" }
 ursina = { git = "https://github.com/pokepetter/ursina", branch = "master" }
 panda3d = { index = "panda3d-archive" }
 
