@@ -94,6 +94,14 @@
         (call-method texture 'set-anisotropic-degree 8)
         texture))
 
+    ;; Mipmapped sprite sheet that must not wrap around at its edges.
+    (define (load-sprite-texture name)
+      (let ((texture (load-tiling-texture name))
+            (clamp (attribute-ref SamplerState 'WM_clamp)))
+        (call-method texture 'set-wrap-u clamp)
+        (call-method texture 'set-wrap-v clamp)
+        texture))
+
     (define (read-shader-source file)
       (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
 
@@ -126,6 +134,39 @@
 
     ;; --- chunk entities --------------------------------------------------
 
+    ;; Grass clumps only grow (and show) in chunks this close to the
+    ;; player's chunk. They're generated on demand, since most loaded chunks
+    ;; are too far away to need them. The grass shader sinks clumps into the
+    ;; ground over GRASS-FADE (distance from the camera), so they're gone
+    ;; before their chunk is switched off.
+    (define GRASS-RADIUS 2)
+    (define GRASS-FADE (list (* CHUNK-SIZE 1.4) (* CHUNK-SIZE GRASS-RADIUS 0.95)))
+
+    (define (grass-near? key centre)
+      (<= (max (abs (- (car key) (car centre))) (abs (- (cadr key) (cadr centre))))
+          GRASS-RADIUS))
+
+    (define (show-grass! terrain show?)
+      (vector-for-each
+        (lambda (child)
+          ;; `enabled`, not `visible`: showing again would also undo the
+          ;; hide from the shadow camera.
+          (when (equal? (attribute-ref child 'name) "grass")
+            (attribute-set! child 'enabled show?)))
+        (attribute-ref terrain 'children)))
+
+    ;; Player chunk the grass was last shown around; #f after a reload, so
+    ;; the next frame shows it again.
+    (define grass-centre #f)
+
+    (define (update-grass! pcx pcz)
+      (let ((centre (list pcx pcz)))
+        (unless (equal? centre grass-centre)
+          (set! grass-centre centre)
+          (hash-table-walk (state-ref 'chunks)
+                           (lambda (key terrain)
+                             (show-grass! terrain (grass-near? key centre)))))))
+
     ;; Turn generated mesh data into entities. Must run on the main thread.
     (define (make-chunk cx cz data)
       (let* ((ox (* cx CHUNK-SIZE))
@@ -144,6 +185,7 @@
         (when water
           (let ((surface (call/kw Entity
                                   (parent terrain
+                                   name "water"
                                    model (call/kw Mesh
                                                   (vertices (car water)
                                                    colors (cadr water)
@@ -154,8 +196,29 @@
             (call-method surface 'hide 1)))
         terrain))
 
+    ;; Add the clump mesh from `chunk-grass` to a chunk's terrain entity.
+    (define (make-grass! terrain grass show?)
+      (let ((clumps (call/kw Entity
+                             (parent terrain
+                              name "grass"
+                              model (call/kw Mesh
+                                             (vertices (car grass)
+                                              normals (cadr grass)
+                                              uvs (list-ref grass 2)
+                                              colors (list-ref grass 3)
+                                              triangles (list-ref grass 4)))
+                              shader (state-ref 'grass-shader)
+                              double_sided #t))))
+        ;; Too fine for the shadow map; it would only add speckle.
+        (call-method clumps 'hide 1)
+        (attribute-set! clumps 'enabled show?)))
+
     (define (generate-chunk cx cz pause)
       (chunk-mesh-data (* cx CHUNK-SIZE) (* cz CHUNK-SIZE) pause))
+
+    ;; `sources` is the chunk's terrain (vertices colors).
+    (define (generate-grass cx cz sources pause)
+      (chunk-grass (* cx CHUNK-SIZE) (* cz CHUNK-SIZE) (car sources) (cadr sources) pause))
 
     (define (no-pause) #f)
 
@@ -181,7 +244,8 @@
           (lambda (key)
             (when (out-of-range? key pcx pcz)
               (destroy (hash-table-ref chunks key))
-              (hash-table-delete! chunks key)))
+              (hash-table-delete! chunks key)
+              (hash-table-delete! (state-ref 'grass-jobs) key)))
           (hash-table-keys chunks))))
 
     ;; Drop every chunk and any pending work. Used after terrain edits: the
@@ -193,8 +257,10 @@
             (destroy (hash-table-ref chunks key))
             (hash-table-delete! chunks key))
           (hash-table-keys chunks)))
-      (for-each (lambda (key) (hash-table-delete! (state-ref 'in-flight) key))
-                (hash-table-keys (state-ref 'in-flight)))
+      (for-each (lambda (table)
+                  (for-each (lambda (key) (hash-table-delete! table key))
+                            (hash-table-keys table)))
+                (list (state-ref 'in-flight) (state-ref 'grass-jobs)))
       (with-lock
         (lambda ()
           (state-set! 'job-queue '())
@@ -208,7 +274,9 @@
     ;; thread keeps just a couple of jobs in flight and always asks for the
     ;; nearest missing chunk, so priorities follow the player.
     ;;
-    ;; Jobs are (cx cz generation); results are (cx cz generation data).
+    ;; Jobs are (cx cz generation grass-sources): `grass-sources` is #f for
+    ;; a chunk, or the chunk's terrain (vertices colors) for its grass.
+    ;; Results are the job with the generated data added on the end.
 
     (define MAX-JOBS-IN-FLIGHT 2)
     (define MAX-BUILDS-PER-FRAME 2)
@@ -243,10 +311,14 @@
           (let ((job (car (state-ref 'job-queue))))
             (state-set! 'job-queue (cdr (state-ref 'job-queue)))
             (mutex-unlock! lock)
-            ;; A failing chunk reports #f instead of killing the worker. It stays
-            ;; in flight, so it isn't retried every frame until `regenerate!`.
+            ;; A failing job reports #f instead of killing the worker. A chunk
+            ;; stays in flight, so it isn't retried every frame until
+            ;; `regenerate!`; grass is marked done without any.
             (let ((data (guard (e (else (report! "chunk" e) #f))
-                          (generate-chunk (list-ref job 0) (list-ref job 1) pace!))))
+                          (if (list-ref job 3)
+                              (generate-grass (list-ref job 0) (list-ref job 1)
+                                              (list-ref job 3) pace!)
+                              (generate-chunk (list-ref job 0) (list-ref job 1) pace!)))))
               (with-lock
                 (lambda ()
                   (state-set! 'finished
@@ -263,8 +335,45 @@
         (lambda ()
           (state-set! 'job-queue
                       (append (state-ref 'job-queue)
-                              (list (append key (list (state-ref 'generation))))))))
+                              (list (append key (list (state-ref 'generation) #f)))))))
       (condition-variable-signal! work-available))
+
+    ;; Grass jobs go to the front of the queue: they're small, and right
+    ;; around the player.
+    (define MAX-GRASS-JOBS 2)
+
+    (define (request-grass! key terrain)
+      (let ((model (attribute-ref terrain 'model)))
+        (hash-table-set! (state-ref 'grass-jobs) key 'pending)
+        (with-lock
+          (lambda ()
+            (state-set! 'job-queue
+                        (cons (append key (list (state-ref 'generation)
+                                                (list (attribute-ref model 'vertices)
+                                                      (attribute-ref model 'colors))))
+                              (state-ref 'job-queue)))))
+        (condition-variable-signal! work-available)))
+
+    (define (pending-grass-jobs)
+      (let count ((states (hash-table-values (state-ref 'grass-jobs))) (n 0))
+        (cond ((null? states) n)
+              ((equal? (car states) 'pending) (count (cdr states) (+ n 1)))
+              (else (count (cdr states) n)))))
+
+    ;; Ask for grass on loaded chunks within GRASS-RADIUS that don't have it.
+    (define (request-missing-grass! pcx pcz)
+      (let ((chunks (state-ref 'chunks)) (jobs (state-ref 'grass-jobs)))
+        (let loop ((offsets OFFSETS) (pending (pending-grass-jobs)))
+          (when (and (pair? offsets)
+                     (< pending MAX-GRASS-JOBS)
+                     (grass-near? (car offsets) (list 0 0)))
+            (let* ((key (list (+ pcx (car (car offsets)))
+                              (+ pcz (cadr (car offsets)))))
+                   (terrain (hash-table-ref/default chunks key #f)))
+              (if (and terrain (not (hash-table-exists? jobs key)))
+                  (begin (request-grass! key terrain)
+                         (loop (cdr offsets) (+ pending 1)))
+                  (loop (cdr offsets) pending)))))))
 
     ;; Ask the worker for the nearest missing chunks, up to the in-flight cap.
     (define (request-missing! pcx pcz)
@@ -286,9 +395,22 @@
             (state-set! 'finished '())
             done))))
 
-    ;; Build entities for finished chunks, skipping ones we've walked away from
-    ;; and results from before the last `regenerate!`. Leftovers beyond the
-    ;; per-frame cap go back on the list.
+    ;; Add finished grass to its chunk, unless the chunk is gone or the result
+    ;; is stale. Returns #t if it built an entity.
+    (define (grass-finished! key grass pcx pcz)
+      (let ((jobs (state-ref 'grass-jobs))
+            (terrain (hash-table-ref/default (state-ref 'chunks) key #f)))
+        (and (equal? (hash-table-ref/default jobs key #f) 'pending)
+             (begin
+               (hash-table-set! jobs key 'done)
+               (and terrain
+                    grass
+                    (begin (make-grass! terrain grass (grass-near? key (list pcx pcz)))
+                           #t))))))
+
+    ;; Build entities for finished chunks and grass, skipping chunks we've
+    ;; walked away from and results from before the last `regenerate!`.
+    ;; Leftovers beyond the per-frame cap go back on the list.
     (define (build-finished! pcx pcz)
       (let ((chunks (state-ref 'chunks)) (in-flight (state-ref 'in-flight)))
         (let loop ((done (take-finished!)) (budget MAX-BUILDS-PER-FRAME))
@@ -300,10 +422,14 @@
                  (let* ((job (car done))
                         (cx (list-ref job 0))
                         (cz (list-ref job 1))
-                        (key (list cx cz)))
+                        (key (list cx cz))
+                        (data (list-ref job 4)))
                    (cond ((not (= (list-ref job 2) (state-ref 'generation)))
                           (loop (cdr done) budget))
-                         ((not (list-ref job 3))
+                         ((list-ref job 3)
+                          (loop (cdr done)
+                                (if (grass-finished! key data pcx pcz) (- budget 1) budget)))
+                         ((not data)
                           (loop (cdr done) budget))
                          (else
                           (hash-table-delete! in-flight key)
@@ -311,7 +437,7 @@
                               (loop (cdr done) budget)
                               (begin
                                 (hash-table-set! chunks key
-                                                 (make-chunk cx cz (list-ref job 3)))
+                                                 (make-chunk cx cz data))
                                 (loop (cdr done) (- budget 1))))))))))))
 
     ;; --- sun -------------------------------------------------------------
@@ -519,7 +645,9 @@
         (follow-sun! x z)
         (build-finished! pcx pcz)
         (request-missing! pcx pcz)
-        (unload-far! pcx pcz)))
+        (unload-far! pcx pcz)
+        (request-missing-grass! pcx pcz)
+        (update-grass! pcx pcz)))
 
     ;; Errors in a frame are printed once each, not every frame.
     (define (frame-safely)
@@ -542,24 +670,30 @@
         (lambda (input) (set-input! (car input) (cadr input)))
         (list (list "fog_end" FOG-END)
               (list "sea_level" SEA-LEVEL)
-              (list "shadow_bias" SHADOW-BIAS)))
+              (list "shadow_bias" SHADOW-BIAS)
+              (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))))
       (state-set! 'applied-time #f)
       (apply-time!))
 
     ;; --- shaders ---------------------------------------------------------
 
-    ;; Terrain and water shaders are compiled from src/shaders/*. Ursina
-    ;; compiles a shader when it is first used, so a fresh `Shader` object
-    ;; picks up edits to the GLSL.
+    ;; Terrain, water and grass shaders are compiled from src/shaders/*.
+    ;; Ursina compiles a shader when it is first used, so a fresh `Shader`
+    ;; object picks up edits to the GLSL.
     (define (apply-shaders! terrain)
       (attribute-set! terrain 'shader (state-ref 'terrain-shader))
       (vector-for-each
-        (lambda (child) (attribute-set! child 'shader (state-ref 'water-shader)))
+        (lambda (child)
+          (attribute-set! child 'shader
+                          (state-ref (if (equal? (attribute-ref child 'name) "grass")
+                                         'grass-shader
+                                         'water-shader))))
         (attribute-ref terrain 'children)))
 
     (define (reload-shaders!)
       (state-set! 'terrain-shader (load-shader "terrain"))
       (state-set! 'water-shader (load-shader "water"))
+      (state-set! 'grass-shader (load-shader "grass"))
       (hash-table-walk (state-ref 'chunks)
                        (lambda (key terrain) (apply-shaders! terrain))))
 
@@ -594,7 +728,8 @@
 
     (define SHADER-FILES
       (list "shaders/terrain.vert" "shaders/terrain.frag"
-            "shaders/water.vert" "shaders/water.frag"))
+            "shaders/water.vert" "shaders/water.frag"
+            "shaders/grass.vert" "shaders/grass.frag"))
     (define WATCHED-FILES
       (append (list "world_terrain.sld" "world_game.sld") SHADER-FILES))
 
@@ -797,6 +932,7 @@
         (reload-shaders!)
         (set-input! "grass_tex" (load-tiling-texture "grass.png"))
         (set-input! "rock_tex" (load-tiling-texture "rock.png"))
+        (set-input! "clump_tex" (load-sprite-texture "grass_clumps.png"))
         (make-sun!)
         (state-set! 'last-tick (now))
         (apply-scene!)

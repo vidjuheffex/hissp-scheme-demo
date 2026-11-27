@@ -23,7 +23,8 @@
           climate
           biome-weights
           biome-at
-          chunk-mesh-data)
+          chunk-mesh-data
+          chunk-grass)
   (import (scheme base)
           (scheme inexact)
           (scheme python)
@@ -394,6 +395,156 @@
               (vector-set! v k (* i CELL))
               (vector-set! v (+ k 2) (* j CELL)))))
         v))
+
+    ;; --- grass clumps ----------------------------------------------------
+    ;;
+    ;; Candidate spots sit GRASS-SPACING apart, jittered. Each keeps a clump
+    ;; with a chance set by the biome (only grassland and dry grassland grow
+    ;; grass) times a slow "meadow" noise, so grass comes in patches with
+    ;; bare ground between. A clump is two crossed quads showing one sprite
+    ;; of `assets/textures/grass_clumps.png`: 0 short, 1 tall, 2 flowers,
+    ;; 3 dry.
+
+    (define GRASS-SPACING 1.6)
+    (define GRASS-CHANCE 0.85)         ; in full grassland, mid-meadow
+    (define DRY-GRASS-CHANCE 0.6)
+    (define MEADOW-FREQUENCY (/ 1.0 40.0))
+    (define MEADOW (list 0.25 0.5))    ; meadow noise ramp from bare to full
+    (define GRASS-SHORE 1.6)           ; none this close above the sea (sand)
+    (define GRASS-TOP 25.0)            ; none from the rock band up
+    (define GRASS-MAX-GRADIENT 0.6)    ; none on slopes steeper than this
+    (define CLUMP-SINK 0.15)           ; push bases into the ground on slopes
+    (define CLUMPS-PER-SIDE (exact (round (/ CHUNK-SIZE GRASS-SPACING))))
+    (define MAX-CLUMPS (* CLUMPS-PER-SIDE CLUMPS-PER-SIDE))
+    (define SPRITES 4.0)
+    (define UV-INSET 0.004)            ; keeps sampling off the neighbor sprite
+
+    ;; A spot's random numbers: stream k of spot (gi, gj).
+    (define (spot-random gi gj k)
+      (hash2 (+ gi (* 17 k)) (- gj (* 31 k))))
+
+    ;; Another number in [0, 1) derived from `r`, for traits that needn't be
+    ;; independent of each other.
+    (define (scramble r factor)
+      (let ((s (* r factor)))
+        (- s (floor s))))
+
+    ;; Which sprite a kept clump shows, given its share of dry grass.
+    (define (clump-sprite dry-share pick flavor)
+      (cond ((< pick dry-share) 3)
+            ((< flavor 0.55) 0)
+            ((< flavor 0.82) 1)
+            (else 2)))
+
+    (define SPRITE-HEIGHTS (vector 1.0 1.7 1.25 1.15))
+
+    ;; Per-sprite color multiplier, so clumps read against the ground
+    ;; texture they stand on (the sprites alone are darker than it).
+    (define SPRITE-TINTS
+      (vector (list 1.1 1.18 0.85) (list 1.0 1.08 0.85) (list 1.08 1.15 1.0)
+              (list 1.12 1.1 0.98)))
+
+    ;; Write clump number `n` into `mesh`: two crossed quads standing on
+    ;; (x, y, z), spanning +-(dx, dz) sideways and `height` tall.
+    (define (put-clump! mesh n x y z dx dz height sprite r g b)
+      (let ((top (+ y height))
+            (u0 (+ (/ sprite SPRITES) UV-INSET))
+            (u1 (- (/ (+ sprite 1) SPRITES) UV-INSET))
+            (v (* 8 n)))
+        (vector-copy! (car mesh) (* 24 n)
+                      (vector (- x dx) y (- z dz) (+ x dx) y (+ z dz)
+                              (+ x dx) top (+ z dz) (- x dx) top (- z dz)
+                              (+ x dz) y (- z dx) (- x dz) y (+ z dx)
+                              (- x dz) top (+ z dx) (+ x dz) top (- z dx)))
+        (vector-copy! (cadr mesh) (* 24 n)
+                      (vector 0.0 0.0 0.0 0.0 0.0 0.0 0.0 height 0.0 0.0 height 0.0
+                              0.0 0.0 0.0 0.0 0.0 0.0 0.0 height 0.0 0.0 height 0.0))
+        (vector-copy! (list-ref mesh 2) (* 16 n)
+                      (vector u0 0.0 u1 0.0 u1 1.0 u0 1.0 u0 0.0 u1 0.0 u1 1.0 u0 1.0))
+        (vector-copy! (list-ref mesh 3) (* 32 n)
+                      (vector r g b 1.0 r g b 1.0 r g b 1.0 r g b 1.0
+                              r g b 1.0 r g b 1.0 r g b 1.0 r g b 1.0))
+        (vector-copy! (list-ref mesh 4) (* 12 n)
+                      (vector v (+ v 1) (+ v 2) v (+ v 2) (+ v 3)
+                              (+ v 4) (+ v 5) (+ v 6) (+ v 4) (+ v 6) (+ v 7)))))
+
+    ;; Grass clump mesh data for the chunk at world (ox, oz), from the
+    ;; terrain vertices and colors `chunk-mesh-data` made for it. Returns
+    ;;   (vertices normals uvs colors triangles), or #f if nothing grows.
+    ;; Normals don't hold a direction: their y is the vertex's height above
+    ;; the ground (0 at the bottom). The grass shader uses it for wind sway
+    ;; and for sinking clumps into the ground at the edge of the grass range.
+    ;; Heights follow the same two triangles per cell as the terrain mesh.
+    (define (chunk-grass ox oz terrain biomes pause)
+      (let ((mesh (list (make-vector (* MAX-CLUMPS 24) 0.0)
+                        (make-vector (* MAX-CLUMPS 24) 0.0)
+                        (make-vector (* MAX-CLUMPS 16) 0.0)
+                        (make-vector (* MAX-CLUMPS 32) 1.0)
+                        (make-vector (* MAX-CLUMPS 12) 0)))
+            (gi0 (exact (floor (/ (+ ox SEED-X) GRASS-SPACING))))
+            (gj0 (exact (floor (/ (+ oz SEED-Z) GRASS-SPACING))))
+            (count 0))
+        (do ((j 0 (+ j 1))) ((= j CLUMPS-PER-SIDE))
+          (do ((i 0 (+ i 1))) ((= i CLUMPS-PER-SIDE))
+            (let* ((gi (+ gi0 i))
+                   (gj (+ gj0 j))
+                   (jitter (spot-random gi gj 1))
+                   (fx (/ (* GRASS-SPACING (+ i jitter)) CELL))
+                   (fz (/ (* GRASS-SPACING (+ j (scramble jitter 57.13))) CELL))
+                   (ci (exact (floor fx)))
+                   (cj (exact (floor fz)))
+                   (c (* 4 (+ ci (* cj VERTS))))
+                   (w-dry (vector-ref biomes (+ c 1)))
+                   (w-grass (- 1.0 (vector-ref biomes c) w-dry (vector-ref biomes (+ c 2))))
+                   (lush (+ (* GRASS-CHANCE (max w-grass 0.0)) (* DRY-GRASS-CHANCE w-dry))))
+              (when (> lush 0.0)
+                (let* ((u (- fx ci))
+                       (v (- fz cj))
+                       (a (+ 1 (* 3 (+ ci (* cj VERTS)))))
+                       (ha (vector-ref terrain a))
+                       (hb (vector-ref terrain (+ a 3)))
+                       (hc (vector-ref terrain (+ a (* 3 VERTS))))
+                       (hd (vector-ref terrain (+ a (* 3 VERTS) 3)))
+                       (h (if (<= (+ u v) 1.0)
+                              (+ ha (* (- hb ha) u) (* (- hc ha) v))
+                              (+ hd (* (- hc hd) (- 1.0 u)) (* (- hb hd) (- 1.0 v)))))
+                       (gradient (/ (max (abs (- hb ha)) (abs (- hc ha))
+                                         (abs (- hd hb)) (abs (- hd hc)))
+                                    CELL))
+                       (lx (* fx CELL))
+                       (lz (* fz CELL)))
+                  (when (and (> h (+ SEA-LEVEL GRASS-SHORE))
+                             (< h GRASS-TOP)
+                             (< gradient GRASS-MAX-GRADIENT)
+                             (< (spot-random gi gj 0)
+                                (* lush
+                                   (ramp MEADOW
+                                         (value-noise (* (+ ox lx SEED-X) MEADOW-FREQUENCY)
+                                                      (* (+ oz lz SEED-Z) MEADOW-FREQUENCY))))))
+                    (let* ((r (spot-random gi gj 2))
+                           (sprite (clump-sprite (/ (* DRY-GRASS-CHANCE w-dry) lush)
+                                                 r (scramble r 13.7)))
+                           (size (+ 0.7 (* 0.6 (scramble r 71.3))))
+                           (half-width (* 0.75 size))
+                           (angle (* 3.14159 (scramble r 157.1)))
+                           (shade (+ 0.85 (* 0.3 (scramble r 331.7))))
+                           (tint (vector-ref SPRITE-TINTS sprite)))
+                      (put-clump! mesh count lx
+                                  (- h CLUMP-SINK (* gradient half-width))
+                                  lz
+                                  (* half-width (cos angle))
+                                  (* half-width (sin angle))
+                                  (* size (vector-ref SPRITE-HEIGHTS sprite))
+                                  sprite
+                                  (* shade (car tint))
+                                  (* shade (cadr tint) (+ 0.95 (* 0.1 (scramble r 673.3))))
+                                  (* shade (list-ref tint 2)))
+                      (set! count (+ count 1))))))))
+          (pause))
+        (and (> count 0)
+             (map (lambda (v per-clump) (vector-copy v 0 (* count per-clump)))
+                  mesh
+                  (list 24 24 16 32 12)))))
 
     ;; Build mesh data for the chunk whose corner sits at world (ox, oz).
     ;; Vertices are local to the chunk. All arrays are flat float vectors

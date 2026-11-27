@@ -28,6 +28,7 @@
             (list 'generation 0)
             (list 'chunks (make-hash-table))
             (list 'in-flight (make-hash-table))
+            (list 'grass-jobs (make-hash-table))   ; chunk key -> 'pending or 'done
             (list 'job-queue '())
             (list 'finished '())
             (list 'dev-queue '())
@@ -44,4 +45,5 @@
             (list 'sun #f)
             (list 'world-root #f)
             (list 'terrain-shader #f)
-            (list 'water-shader #f)))))
+            (list 'water-shader #f)
+            (list 'grass-shader #f)))))

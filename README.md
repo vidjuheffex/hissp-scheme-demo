@@ -24,8 +24,11 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
-- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow) and water
-- `assets/textures/` — tiling grass and rock textures
+- `src/shaders/` — GLSL for the terrain (biome ground cover, rock, beaches, snow),
+  water, and grass clumps (wind, fade-out)
+- `assets/textures/` — tiling grass and rock textures, and the grass clump sprites
+- `tools/make_grass_clumps.py` — one-off generator for `grass_clumps.png`
+  (`uv run --no-project --with pillow --with numpy tools/make_grass_clumps.py`)
 - `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
 
 ## Live development
@@ -67,6 +70,21 @@ The knobs are at the top of the biomes section in `src/world_terrain.sld`:
 `CLIMATE-FREQUENCY` (biome size), `WARP-AMOUNT` (how wiggly borders are),
 the `COLD`/`HOT`/`ARID`/`SEMI-ARID` thresholds (how much of each biome), and
 the per-biome height functions. Saving the file regenerates the world.
+
+## Grass clumps
+
+Grassland and dry grassland grow clumps of grass in four kinds: short tufts,
+tall grass with seed heads, tufts with flowers, and dry golden tufts. They
+grow in meadows with bare ground between, and never on beaches, steep slopes,
+the rock band, desert or snow. Clumps are only made for chunks within two of
+the player's chunk, and sink into the ground near the edge of that range.
+
+The knobs are in the grass clumps section of `src/world_terrain.sld`:
+`GRASS-SPACING` (density), `GRASS-CHANCE`/`DRY-GRASS-CHANCE`, `MEADOW` and
+`MEADOW-FREQUENCY` (patch size), `SPRITE-HEIGHTS` and `SPRITE-TINTS`.
+`GRASS-RADIUS` and `GRASS-FADE` are in `src/world_game.sld`, and wind is in
+`src/shaders/grass.vert`. Saving the terrain file regrows the grass along
+with the chunks.
 
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.
