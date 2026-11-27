@@ -25,6 +25,8 @@
 ;;   (strike! 1.0)                 lightning that many km away (thunder follows)
 ;;   (set-weather! 0.9)            force the cloud cover (0 clear, 1 storm); #f undoes
 ;;   (set-wind! 0)                 force the wind (0 calm, 1 breeze); #f undoes
+;;   (wind)                        wind speed, and heading in degrees (0 toward +x, 90 toward +z)
+;;   (set-wind-direction! 90)      force the heading; #f undoes
 ;;   (biome-here)                  biome weights under the player
 ;;   (visit-biome! "desert")       go to the nearest desert (or "snowy", ...)
 ;;   (go-to! 500 -200)             move the player
@@ -57,7 +59,7 @@
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
     (only pathlib Path)
-    (only panda3d.core Filename SamplerState Texture TexturePool)
+    (only panda3d.core Filename OmniBoundingVolume SamplerState Texture TexturePool)
     (rename (only panda3d.core loadPrcFileData)
             (loadPrcFileData load-prc-file-data)))
   (begin
@@ -616,11 +618,38 @@
                         (list "ground" ground)
                         (list "ground_size" (* GROUND-SAMPLES GROUND-SPACING))
                         (list "ground_corner" (make-tuple 0.0 0.0))
+                        (list "drift" (make-tuple 0.0 0.0))
                         (list "fireflies" 0.0)
                         (list "bats" 0.0)
                         (list "birds" 0.0)
                         (list "ambient_color" (make-tuple 1.0 1.0 1.0))))
         (state-set! 'life (list life ground #f #f))))
+
+    ;; Wind lines (see `wind-lines-mesh` in (world weather)): one mesh that
+    ;; follows the camera, moved entirely by the wind shader.
+    (define (make-wind-lines!)
+      (let* ((data (wind-lines-mesh))
+             (mesh (call/kw Mesh (vertices (car data)
+                                  uvs (cadr data)
+                                  colors (list-ref data 2)
+                                  triangles (list-ref data 3))))
+             (lines (call/kw Entity (model mesh double_sided #t shader (load-shader "wind")))))
+        (call-method mesh 'set-transparency #t)
+        (call-method lines 'set-depth-write #f)
+        (call-method lines 'hide 1)
+        ;; The shader puts the lines far from where the mesh's vertices are,
+        ;; so never cull it.
+        (call-method (call-method lines 'node) 'set-bounds (OmniBoundingVolume))
+        (call-method (call-method lines 'node) 'set-final #t)
+        (for-each (lambda (input) (call-method lines 'set-shader-input (car input) (cadr input)))
+                  (list (list "box" WIND-LINE-BOX)
+                        (list "eye" (make-tuple 0.0 0.0 0.0))
+                        (list "wind_dir" (make-tuple 1.0 0.0))
+                        (list "air_drift" (make-tuple 0.0 0.0))
+                        (list "wind_speed" 0.0)
+                        (list "amount" 0.0)
+                        (list "ambient_color" (make-tuple 1.0 1.0 1.0))))
+        (state-set! 'wind-lines lines)))
 
     ;; How many of each creature are out where the player stands, now.
     (define (life-now x z)
@@ -824,7 +853,11 @@
         (let ((life (state-ref 'life)))
           (when life
             (attribute-set! (car life) 'position eye)
-            (call-method (car life) 'set-shader-input "eye" eye)))))
+            (call-method (car life) 'set-shader-input "eye" eye)))
+        (let ((lines (state-ref 'wind-lines)))
+          (when lines
+            (attribute-set! lines 'position eye)
+            (call-method lines 'set-shader-input "eye" eye)))))
 
     ;; --- time of day -----------------------------------------------------
 
@@ -1016,6 +1049,9 @@
             (set-input! "ambient_color" (rgb (list-ref scene 3)))
             (when (state-ref 'life)
               (call-method (car (state-ref 'life)) 'set-shader-input "ambient_color"
+                           (rgb (list-ref scene 3))))
+            (when (state-ref 'wind-lines)
+              (call-method (state-ref 'wind-lines) 'set-shader-input "ambient_color"
                            (rgb (list-ref scene 3))))))))
 
     ;; Advance the clock by the real time since the last tick, counting days
@@ -1224,22 +1260,29 @@
                                      (attribute-ref (state-ref 'player) 'y)
                                      (state-ref 'weather-override)))
              (now-weather (weather-step (state-ref 'weather) target dt))
+             (dir (wind-direction-now (cadr now-weather)))
              (drift (map (lambda (d w) (+ d (* w CLOUD-SPEED dt)))
-                         (state-ref 'cloud-drift) WIND))
+                         (state-ref 'cloud-drift) dir))
              (wind (if (state-ref 'wind-override)
                        (state-ref 'wind-override)
                        (wind-speed (weather-days) (sin (sun-angle (state-ref 'time-of-day)))
                                    (car now-weather) (cadr now-weather))))
-             (sky (state-ref 'sky)))
+             (sky (state-ref 'sky))
+             (life (state-ref 'life)))
         (state-set! 'weather now-weather)
         (state-set! 'cloud-drift drift)
         (state-set! 'wind wind)
+        (state-set! 'wind-dir dir)
         (set-input! "wind_speed" wind)
+        (set-input! "wind_dir" (apply make-tuple dir))
         (set-input! "wetness" (list-ref now-weather 3))
         (set-input! "rain" (* (cadr now-weather) (- 1.0 (list-ref now-weather 2))))
         (set-input! "drift" (apply make-tuple drift))
         (set-input! "snow_cover" (list-ref now-weather 4))
         (update-blooms!)
+        (update-wind-lines! wind dir dt)
+        (when life
+          (call-method (car life) 'set-shader-input "drift" (apply make-tuple drift)))
         (when sky
           (call-method (cadr sky) 'set-shader-input "drift" (apply make-tuple drift))
           (let ((precipitation (list-ref sky 2))
@@ -1247,7 +1290,38 @@
             (attribute-set! precipitation 'enabled (> amount 0.01))
             (call-method precipitation 'set-shader-input "intensity" amount)
             (call-method precipitation 'set-shader-input "snow" (list-ref now-weather 2))
-            (blow-precipitation! precipitation wind (list-ref now-weather 2) dt)))))
+            (blow-precipitation! precipitation wind dir (list-ref now-weather 2) dt)))))
+
+    ;; Which way (x z) the wind blows now: toward the heading
+    ;; `(set-wind-direction! ...)` forced, if any, else `wind-direction`'s.
+    (define (wind-direction-now precipitation)
+      (let ((forced (state-ref 'wind-direction-override)))
+        (if forced
+            (let ((a (* forced (/ PI 180.0))))
+              (list (cos a) (sin a)))
+            (wind-direction (weather-days) precipitation))))
+
+    ;; Meters a second the wind lines ride along, per unit of wind.
+    (define AIR-SPEED 10.0)
+
+    ;; Carries the wind lines along `dir` at the wind's speed (wrapped to the
+    ;; square they fill). A breeze brings out a few, enough for one or two
+    ;; in view; only a windy storm brings out the rest.
+    (define (update-wind-lines! wind dir dt)
+      (let ((lines (state-ref 'wind-lines)))
+        (when lines
+          (let ((drift (map (lambda (d w)
+                              (let ((x (+ d (* w wind AIR-SPEED dt))))
+                                (- x (* WIND-LINE-BOX (floor (/ x WIND-LINE-BOX))))))
+                            (state-ref 'air-drift)
+                            dir)))
+            (state-set! 'air-drift drift)
+            (for-each (lambda (input) (call-method lines 'set-shader-input (car input) (cadr input)))
+                      (list (list "wind_dir" (apply make-tuple dir))
+                            (list "air_drift" (apply make-tuple drift))
+                            (list "wind_speed" wind)
+                            (list "amount" (+ (* 0.25 (smooth-step 0.3 1.0 wind))
+                                              (* 0.75 (smooth-step 1.6 2.4 wind))))))))))
 
     ;; Meters a second the wind pushes rain and snow sideways, per unit of
     ;; wind (about 1 a breeze, 2.5 a storm). Snow is light and blows far
@@ -1257,9 +1331,9 @@
 
     ;; Hands the rain shader how fast the wind carries the drops, and adds up
     ;; how far it has carried them (wrapped to the box they fill).
-    (define (blow-precipitation! precipitation wind snow dt)
+    (define (blow-precipitation! precipitation wind dir snow dt)
       (let* ((push (* wind (+ RAIN-PUSH (* (- SNOW-PUSH RAIN-PUSH) snow))))
-             (velocity (map (lambda (w) (* w push)) WIND))
+             (velocity (map (lambda (w) (* w push)) dir))
              (drift (map (lambda (d v size)
                            (let ((x (+ d (* v dt))))
                              (- x (* size (floor (/ x size))))))
@@ -1294,6 +1368,19 @@
     ;; a gale, `(set-wind! #f)` lets the wind run by itself again.
     (define (set-wind! speed)
       (state-set! 'wind-override speed))
+
+    ;; REPL: `(wind)` => (speed heading): heading in degrees, 0 blowing
+    ;; toward +x and 90 toward +z, e.g. (1.1 212).
+    (define (wind)
+      (let* ((dir (state-ref 'wind-dir))
+             (degrees (* (atan (cadr dir) (car dir)) (/ 180.0 PI))))
+        (list (/ (round (* 100.0 (state-ref 'wind))) 100.0)
+              (exact (round (- degrees (* 360.0 (floor (/ degrees 360.0)))))))))
+
+    ;; REPL: `(set-wind-direction! 90)` makes the wind blow toward +z,
+    ;; `(set-wind-direction! #f)` lets it wander by itself again.
+    (define (set-wind-direction! degrees)
+      (state-set! 'wind-direction-override degrees))
 
     ;; REPL: `(set-weather! 1.0)` brings a storm wherever you are,
     ;; `(set-weather! 0)` clears the sky, `(set-weather! #f)` lets the
@@ -1673,7 +1760,8 @@
             "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl" "shaders/stars.glsl"
             "shaders/mist.glsl"
             "shaders/precip.vert" "shaders/precip.frag"
-            "shaders/life.vert" "shaders/life.frag"))
+            "shaders/life.vert" "shaders/life.frag"
+            "shaders/wind.vert" "shaders/wind.frag"))
     (define WATCHED-FILES
       (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_life.sld"
                   "world_game.sld")
@@ -1889,6 +1977,7 @@
         (make-moon!)
         (make-sky!)
         (make-life!)
+        (make-wind-lines!)
         (make-hud!)
         (make-sounds!)
         (make-footsteps!)

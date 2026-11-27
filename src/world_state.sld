@@ -65,7 +65,11 @@
             (list 'weather-override #f)  ; cloud cover forced from the REPL
             (list 'wind 1.0)             ; wind speed now, see `wind-speed`
             (list 'wind-override #f)     ; wind speed forced from the REPL
+            (list 'wind-dir (list 1.0 0.0))      ; (x z) the wind blows toward now, see `wind-direction`
+            (list 'wind-direction-override #f)   ; heading in degrees forced from the REPL
             (list 'cloud-drift (list 0.0 0.0))  ; meters the clouds have moved
+            (list 'air-drift (list 0.0 0.0))    ; how far the wind has carried the wind lines, see `update-wind-lines!`
+            (list 'wind-lines #f)        ; wind lines entity, see `make-wind-lines!`
             (list 'repl-busy #f)         ; a REPL line is waiting to be evaluated
             (list 'player #f)
             (list 'sun #f)

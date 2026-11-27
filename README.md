@@ -25,7 +25,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, heights, chunk mesh data
 - `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree and rock meshes
-- `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow
+- `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow, wind, wind lines
 - `src/world_life.sld` — `(world life)`: fireflies, bats and birds
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
@@ -33,7 +33,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
   wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
-  (phase shading), the sky and clouds, rain and snow, wildlife, and the
+  (phase shading), the sky and clouds, rain and snow, wildlife, wind lines, and the
   coordinates readout's text; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"` (and
   likewise `stars.glsl` and `mist.glsl`)
@@ -70,6 +70,8 @@ Type Scheme into the terminal that started the game, one form per line:
 (weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover, wind
 (set-weather! 1.0)         ; force the cloud cover: 1 storm, 0 clear; #f to let it run
 (set-wind! 0)              ; force the wind: 0 dead calm, 1 breeze; #f to let it run
+(wind)                     ; wind speed and heading (degrees: 0 toward +x, 90 toward +z)
+(set-wind-direction! 90)   ; force the heading; #f to let it wander
 (wildlife)                 ; how many fireflies, bats and birds are out, 0 to 1
 (biome-here)               ; biome weights under the player
 (visit-biome! "desert")    ; go to the nearest desert ("grassland", "dry grassland", "snowy")
@@ -113,6 +115,21 @@ The wind (`wind-speed` in `src/world_weather.sld`) has breezy and still spells
 of its own, drops at night and picks up in storms. It sets how much the grass
 and trees sway and how choppy the water is: on a still, clear night lakes go
 glassy and mirror the stars.
+
+Its direction (`wind-direction`) wanders too: it holds for a while, then
+swings round over ten minutes or so of play, sometimes most of the way
+round, and veers when a storm comes in. Clouds, rain and snow, the grass and
+trees, the bird flocks and the wind lines all follow it.
+
+Wind lines, like Wind Waker's, show which way it's blowing: white streaks
+that draw themselves out high in the sky (110 to 150 m up, over the
+tallest peaks, set by `WIND-LINE-HEIGHTS`), some with a curl, then rub out from the tail and turn
+up somewhere else. A breeze brings out one or two in view at a time, only a
+windy storm a few more, and none show in a calm; they ride along faster in a
+gale. They're one mesh that
+follows the camera, moved entirely in `src/shaders/wind.vert`;
+`WIND-LINES` and `WIND-LINE-BOX` in `src/world_weather.sld` set how many and
+over what area, and `AIR-SPEED` in `src/world_game.sld` how fast they travel.
 
 Thunderstorms (heavy cloud and rain, not snow) throw lightning now and then:
 the sky, clouds and light flash in a few quick pulses, brighter for nearer

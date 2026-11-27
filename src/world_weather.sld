@@ -9,23 +9,23 @@
 ;; fresh snow lies on it.
 
 (define-library (world weather)
-  (export WIND
-          PRECIP-BOX
+  (export PRECIP-BOX
+          WIND-LINE-BOX
           weather-target
+          wind-direction
           wind-speed
           blooms
           mist-amount
           weather-step
-          precipitation-mesh)
+          precipitation-mesh
+          wind-lines-mesh)
   (import (scheme base)
           (scheme inexact)
           (scheme python)
           (only random Random)
           (world terrain))
   (begin
-    ;; Direction (x z) the wind blows: clouds drift and rain slants this
-    ;; way. The grass shader sways along the same direction.
-    (define WIND (list 0.85 0.53))
+    (define PI 3.141592653589793)
 
     ;; Changes of weather per in-game day, roughly.
     (define WEATHER-RATE 2.0)
@@ -69,6 +69,18 @@
         (+ (* spell (- 1.0 (* 0.75 night)))
            (* 0.6 cover cover)
            (* 0.8 precipitation))))
+
+    ;; Which way the wind blows at `days` under `precipitation`, as a unit
+    ;; (x z): clouds drift, rain slants, grass and trees lean, birds and
+    ;; wind lines ride this way. It wanders round over the hours, as much as
+    ;; a full turn now and then, with a small restless wobble on top, and
+    ;; veers when a storm comes in.
+    (define (wind-direction days precipitation)
+      (let* ((t (+ (* days 1.5) (* 0.001 (car (seed-offset)))))
+             (angle (+ (* 2.0 PI (value-noise t 61.3))
+                       (* 0.35 (- (value-noise (* t 6.0) 29.1) 0.5))
+                       (* 0.9 precipitation))))
+        (list (cos angle) (sin angle))))
 
     ;; --- valley mist ---------------------------------------------------------
 
@@ -170,4 +182,49 @@
             (call-method colors 'extend (list show speed 0.0 1.0 show speed 0.0 1.0
                                               show speed 0.0 1.0 show speed 0.0 1.0))
             (call-method triangles 'extend (list i (+ i 1) (+ i 2) i (+ i 2) (+ i 3)))))
+        (list vertices uvs colors triangles)))
+
+    ;; --- wind lines --------------------------------------------------------
+
+    ;; Cartoon streaks in the air that show which way the wind blows. The
+    ;; wind shader draws each out along a curving path, some with a curl,
+    ;; rubs it out from the tail, then starts it again somewhere else in a
+    ;; square this many meters across around the camera.
+    (define WIND-LINE-BOX 900.0)
+    (define WIND-LINES 12)
+    ;; World heights of the lowest and highest lines: over the tallest peaks,
+    ;; which reach 90 m or so.
+    (define WIND-LINE-HEIGHTS (list 110.0 150.0))
+    (define WIND-LINE-SEGMENTS 32)
+
+    ;; One ribbon of WIND-LINE-SEGMENTS quads per line, every vertex at the
+    ;; line's home spot in the square (x z) and world height (y). UVs give the
+    ;; vertex's place on the ribbon (x 0 tail to 1 head, y -1 or 1 across);
+    ;; color red decides at what share of lines out it shows, green and blue
+    ;; are its own random numbers. Returns (vertices uvs colors triangles).
+    (define (wind-lines-mesh)
+      (let ((rng (Random 7))
+            (vertices (vector))
+            (uvs (vector))
+            (colors (vector))
+            (triangles (vector)))
+        (do ((k 0 (+ k 1))) ((= k WIND-LINES))
+          (let ((x (* WIND-LINE-BOX (- (call-method rng 'random) 0.5)))
+                (y (+ (car WIND-LINE-HEIGHTS)
+                      (* (- (cadr WIND-LINE-HEIGHTS) (car WIND-LINE-HEIGHTS))
+                         (call-method rng 'random))))
+                (z (* WIND-LINE-BOX (- (call-method rng 'random) 0.5)))
+                (show (call-method rng 'random))
+                (g (call-method rng 'random))
+                (b (call-method rng 'random))
+                (first (* k 2 (+ WIND-LINE-SEGMENTS 1))))
+            (do ((i 0 (+ i 1))) ((> i WIND-LINE-SEGMENTS))
+              (let ((u (/ i (* 1.0 WIND-LINE-SEGMENTS)))
+                    (v (+ first (* 2 i))))
+                (call-method vertices 'extend (list x y z x y z))
+                (call-method uvs 'extend (list u -1.0 u 1.0))
+                (call-method colors 'extend (list show g b 1.0 show g b 1.0))
+                (when (< i WIND-LINE-SEGMENTS)
+                  (call-method triangles 'extend
+                               (list v (+ v 1) (+ v 3) v (+ v 3) (+ v 2))))))))
         (list vertices uvs colors triangles)))))

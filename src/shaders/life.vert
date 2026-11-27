@@ -16,6 +16,7 @@ uniform float birds;
 uniform sampler2D ground;    // ground heights around the player
 uniform vec2 ground_corner;  // world (x, z) of the ground grid's outer corner
 uniform float ground_size;   // meters the ground grid covers
+uniform vec2 drift;          // how far (meters) the wind has carried the clouds
 
 in vec4 p3d_Vertex;          // the creature's anchor
 in vec2 p3d_MultiTexCoord0;  // its place on the creature
@@ -47,7 +48,7 @@ vec3 bat_path(vec3 anchor, float r, float s, float t) {
 // world downwind and wrap around a big square around the eye.
 vec3 bird_path(vec3 anchor, float flock, float s, float t) {
     float square = 200.0;
-    vec2 c = vec2(fract(flock * 7.13), fract(flock * 3.71)) * square + vec2(1.6, 1.0) * t;
+    vec2 c = vec2(fract(flock * 7.13), fract(flock * 3.71)) * square + 0.2 * drift;
     c = mod(c - eye.xz + 0.5 * square, square) - 0.5 * square;
     float a = t * (0.22 + 0.08 * flock) + s * 0.6;
     float radius = 10.0 + 10.0 * flock;
