@@ -9,7 +9,7 @@ uv run main.py 1234   # revisit a world by seed
 ```
 
 Controls: WASD to walk (Shift to sprint), mouse to look, Escape to toggle
-mouse lock. You can wade into water up to about ankle deep, but no deeper.
+mouse lock. You can wade into water up to about thigh deep, slowing as it gets deeper, but no deeper.
 Your position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`

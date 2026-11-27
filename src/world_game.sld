@@ -1431,8 +1431,10 @@
     (define WALK-SPEED 5.0)
     (define SPRINT-SPEED 10.0)
 
-    ;; Deepest water the player can wade into: about ankle deep.
-    (define WADE-DEPTH 0.15)
+    ;; Deepest water the player can wade into: about thigh deep. Wading slows
+    ;; the player, down to `WADE-SLOWEST` of their speed at the deepest.
+    (define WADE-DEPTH 0.8)
+    (define WADE-SLOWEST 0.5)
 
     (define SURFACES (list "grass" "dirt" "rock" "snow" "water"))
     (define STEP-VARIANTS 4)
@@ -1505,8 +1507,10 @@
     ;; Sets the walking speed, and plays a footstep each stride: strides
     ;; come quicker the faster the player goes, and land harder.
     (define (update-walking! player x z h dt)
-      (attribute-set! player 'speed
-                      (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED))
+      (let ((wading (clamp01 (/ (- SEA-LEVEL h) WADE-DEPTH))))
+        (attribute-set! player 'speed
+                        (* (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED)
+                           (- 1.0 (* (- 1.0 WADE-SLOWEST) wading)))))
       (let ((steps (state-ref 'footsteps)))
         (when (and steps (> dt 0.0))
           (let* ((was (list-ref steps 2))
