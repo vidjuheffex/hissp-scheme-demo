@@ -23,6 +23,7 @@ in vec2 p3d_MultiTexCoord0;   // material + across, height above base
 out vec3 albedo;
 out vec2 plant;
 out vec3 world_pos;
+out vec3 rest_pos;    // world position before swaying, for surface detail
 out vec3 world_normal;
 out vec3 view_pos;
 out vec3 view_normal;
@@ -59,4 +60,5 @@ void main() {
     albedo = p3d_Color.rgb;
     plant = p3d_MultiTexCoord0;
     world_pos = (p3d_ModelMatrix * v).xyz;
+    rest_pos = (p3d_ModelMatrix * p3d_Vertex).xyz;
 }

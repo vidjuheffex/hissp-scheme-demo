@@ -462,15 +462,16 @@
 
     ;; A lumpy clump of leaves around `center`, radius `r` and its height
     ;; `flat` times that. Normals lean away from `heart`, the middle of the
-    ;; crown, so the clumps of a crown shade as one mass.
-    (define (clump! b rng center r flat heart color)
+    ;; crown, so the clumps of a crown shade as one mass. `leaves`, -1 to 1,
+    ;; goes from few big leaves to many small ones (see plant.frag).
+    (define (clump! b rng center r flat heart color leaves)
       (let ((a (call-method rng 'uniform 0.0 6.0))
             (c (call-method rng 'uniform 0.0 6.0))
             (e (call-method rng 'uniform 0.0 6.0)))
-        (band! b 4 8
+        (band! b 6 10
                (lambda (j i)
-                 (let* ((phi (- (* PI (/ j 4.0)) (/ PI 2.0)))
-                        (theta (* -2.0 PI (/ i 8.0)))
+                 (let* ((phi (- (* PI (/ j 6.0)) (/ PI 2.0)))
+                        (theta (* -2.0 PI (/ i 10.0)))
                         (d (list (* (cos phi) (cos theta)) (sin phi) (* (cos phi) (sin theta))))
                         (lump (+ 1.0
                                  (* 0.3 (sin (+ (* 3.1 (x-of d)) a)) (sin (+ (* 2.7 (y-of d)) c)))
@@ -479,25 +480,26 @@
                                             (* r flat lump (y-of d))
                                             (* r lump (z-of d)))))
                         (n (normalize (v+ d (v* (normalize (v- p heart)) 0.8)))))
-                   (list p n (v* color (+ 0.62 (* 0.45 (smooth -1.0 1.0 (y-of n))))) (y-of d)))))))
+                   (list p n (v* color (+ 0.62 (* 0.45 (smooth -1.0 1.0 (y-of n))))) leaves))))))
 
 ;; Broadleaf trees: one or more trunks under a crown of overlapping leaf
     ;; clumps, with limbs reaching out to them. A form gives the proportions,
     ;; lengths as fractions of the tree's height: `fork` where the trunk
     ;; ends, the crown's `middle` height and its `width` and `depth` radii,
-    ;; the `clump` radius and `flat` its height over its width.
+    ;; the `clump` radius and `flat` its height over its width. `leaves`
+    ;; runs from big leaves (-1) to fine ones (1).
     (define OAK
       '((height 6.0 9.5) (stems . 1) (fork . 0.35) (middle . 0.66) (width . 0.36)
         (depth . 0.26) (clumps 8 11) (clump . 0.15) (flat . 0.8) (girth . 0.035)
-        (foliage 0.26 0.42 0.15) (bark 0.33 0.27 0.22)))
+        (foliage 0.26 0.42 0.15) (bark 0.33 0.27 0.22) (leaves . -0.4)))
     (define JUNIPER
       '((height 2.8 4.2) (stems . 3) (fork . 0.15) (middle . 0.55) (width . 0.36)
         (depth . 0.36) (clumps 5 7) (clump . 0.19) (flat . 0.85) (girth . 0.04)
-        (foliage 0.19 0.30 0.22) (bark 0.40 0.30 0.24)))
+        (foliage 0.19 0.30 0.22) (bark 0.40 0.30 0.24) (leaves . 0.5)))
     (define MESQUITE
       '((height 2.5 4.0) (stems . 3) (fork . 0.35) (middle . 0.75) (width . 0.6)
         (depth . 0.18) (clumps 7 10) (clump . 0.2) (flat . 0.5) (girth . 0.03)
-        (foliage 0.42 0.50 0.24) (bark 0.30 0.22 0.17)))
+        (foliage 0.42 0.50 0.24) (bark 0.30 0.22 0.17) (leaves . 1.0)))
 
     (define LIMBS 5)   ; at most, to the lowest clumps; the rest hide inside
 
@@ -561,7 +563,7 @@
           (set-material! b MAT-FOLIAGE)
           (for-each (lambda (c)
                       (clump! b rng (car c) (cadr c) (get 'flat) middle
-                              (jitter rng foliage 0.06)))
+                              (jitter rng foliage 0.06) (get 'leaves)))
                     clumps))))
 
     ;; --- templates --------------------------------------------------------

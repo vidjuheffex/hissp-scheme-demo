@@ -19,6 +19,7 @@ uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 in vec3 albedo;
 in vec2 plant;   // x: material (whole part) + across (fraction); y: height above base
 in vec3 world_pos;
+in vec3 rest_pos;   // world_pos before the tree swayed
 in vec3 world_normal;
 in vec3 view_pos;
 in vec3 view_normal;
@@ -77,6 +78,35 @@ float blotch(vec3 p) {
     float b = mix(mix(hash(c + vec3(0, 0, 1)), hash(c + vec3(1, 0, 1)), f.x),
                   mix(hash(c + vec3(0, 1, 1)), hash(c + vec3(1, 1, 1)), f.x), f.y);
     return mix(a, b, f.z);
+}
+
+// Four cheap random values for cell `c` (no sin, unlike `hash`).
+vec4 hash4(vec3 c) {
+    vec4 p = fract(c.xyzx * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+    p += dot(p, p.wzxy + 33.33);
+    return fract((p.xxyz + p.yzzw) * p.zywx);
+}
+
+// Leaves, one per cell, `per_meter` cells per meter, each a pointed oval
+// about a cell long at its own angle. Of those that reach `p`, the one `p`
+// is furthest inside: x how far out on it (0 its middle, about 0.6 its
+// edge), y its own random value. Leaves sit near the middle of their cells
+// so only the 8 cells around `p` can reach it.
+vec2 leaf_at(vec3 p, float per_meter) {
+    vec3 q = p * per_meter;
+    vec3 base = floor(q - 0.5);
+    vec2 best = vec2(9.0, 0.0);
+    for (int k = 0; k < 8; ++k) {
+        vec3 c = base + vec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        vec4 h = hash4(c);
+        vec3 axis = normalize(hash4(c + 19.0).xyz - 0.5);
+        vec3 off = q - c - 0.3 - 0.4 * h.xyz;
+        float along = dot(off, axis);
+        float side = length(off - axis * along);
+        float e = length(vec2(along * 0.75, side * (1.35 + abs(along))));
+        if (e < best.x) best = vec2(e, h.w);
+    }
+    return best;
 }
 
 // Nearest of points scattered one per cell, `per_meter` cells per meter:
@@ -149,14 +179,30 @@ void main() {
         color *= 0.85 + 0.25 * across;
         color *= mix(1.0, 0.7 + 0.6 * tufts, detail * 0.8 + 0.2);
         thin = 0.05;
-    } else if (material == FOLIAGE) {
-        // Clusters of leaves, with dark gaps between, in two sizes.
-        float leaves = blotch(world_pos * 2.5) * 0.55 + blotch(world_pos * 7.0) * 0.45;
-        color *= mix(0.92, 0.6 + 0.75 * leaves, detail * 0.7 + 0.3);
-        thin = 0.5;
-        sheen = 0.08;
     }
     vec3 bump = vec3(0.0);   // world-space tilt of the normal
+    if (material == FOLIAGE) {
+        // Leaves: the clump's surface cut into leaf-sized pieces, fixed to
+        // the tree so they don't swim as it sways. Facing us they overlap
+        // into a mass; toward the outline only scattered leaves are left,
+        // so the crown's edge breaks up against the sky and through the
+        // gaps shows its darker inside. Far off, where they would shimmer,
+        // the clump fills in again.
+        // `across` carries the species' leaves per meter.
+        float cut = 1.0 - smoothstep(25.0, 55.0, dist);
+        float facing = abs(dot(normalize(view_normal), normalize(-view_pos)));
+        vec2 leaf = leaf_at(rest_pos, mix(5.0, 14.0, across * 0.5 + 0.5));
+        float size = mix(1.5, mix(0.32, 0.75, smoothstep(0.15, 0.7, facing)), cut);
+        if (leaf.x > size) discard;
+        // Each leaf its own shade and tilt; patches of light and shadow
+        // across the crown; a darker margin where leaves overlap.
+        color *= (0.78 + 0.44 * leaf.y) * (0.8 + 0.4 * blotch(rest_pos * 2.0));
+        color *= 1.0 - 0.2 * cut * smoothstep(0.6 * size, size, leaf.x);
+        if (!gl_FrontFacing) color *= 0.65;
+        bump = (hash4(vec3(leaf.y * 97.0)).xyz - 0.5) * 1.2 * cut;
+        thin = 0.5;
+        sheen = 0.1;
+    }
     if (material == PODS) {
         // Packed little pods, each a dome: pale where it bulges out, ochre
         // around, dark in the gaps; some still green, some ripened brown.
@@ -177,7 +223,7 @@ void main() {
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(world_normal) * side;
     vec3 N = normalize(view_normal) * side;
-    if (material == PODS) {
+    if (material == PODS || material == FOLIAGE) {
         bump -= n * dot(bump, n);
         n = normalize(n + bump);
         N = normalize(N + mat3(p3d_ViewMatrix) * bump);

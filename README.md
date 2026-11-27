@@ -180,9 +180,12 @@ odd low, spreading mesquite. `FOREST-CHANCE`, `JUNIPER-CHANCE` and
 Conifers are built by `make-conifer`, tiers of ragged, drooping needle
 skirts. Oaks, junipers and mesquite share `make-broadleaf`: trunks under a
 crown of overlapping leaf clumps with limbs reaching out to them, and the
-`OAK`, `JUNIPER` and `MESQUITE` forms set their proportions. In
-`plant.frag` bark gets furrows, needles tufts and leaves clusters with dark
-gaps, and fresh snow settles on the tops of branches; `plant.vert` sways
+`OAK`, `JUNIPER` and `MESQUITE` forms set their proportions and leaf size
+(broad oak leaves, scaly juniper, fine mesquite). In `plant.frag` bark gets
+furrows and needles tufts; leaf clumps are cut into individual leaves,
+packed where they face you and scattered toward the outline so crowns have
+ragged edges and show sky and branches through them (filling in solid far
+off); fresh snow settles on the tops of branches; `plant.vert` sways
 trees in the wind. You can't walk through trunks: each chunk keeps its
 trees' positions for `keep-out-of-trunks!` in `src/world_game.sld`.
 
