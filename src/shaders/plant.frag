@@ -13,6 +13,7 @@ uniform float fog_end;
 uniform float shadow_bias;
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
 uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
+uniform float wetness;      // 0 dry to 1 soaked by rain
 
 #include "clouds.glsl"
 
@@ -36,6 +37,7 @@ const int BARK = 6;
 const int NEEDLES = 7;
 const int FOLIAGE = 8;
 const int PODS = 9;
+const int ROCK = 10;
 
 uniform mat4 p3d_ViewMatrix;
 
@@ -155,8 +157,31 @@ void main() {
         color *= mix(0.92, 0.6 + 0.75 * leaves, detail * 0.7 + 0.3);
         thin = 0.5;
         sheen = 0.08;
+    } else if (material == ROCK) {
+        // `across` runs from speckled granite (-1) to banded sandstone (1).
+        // Mottled at three sizes; darker crusts and pale flecks on granite,
+        // wavering layers in sandstone; lichen on the tops.
+        float sandstone = across * 0.5 + 0.5;
+        float mottle = blotch(world_pos * 1.3) * 0.5 + blotch(world_pos * 4.0) * 0.3
+                     + blotch(world_pos * 11.0) * 0.2;
+        color *= 0.72 + 0.56 * mottle;
+        float flecks = dots(world_pos, 28.0, 0.35) - 0.8 * dots(world_pos + 7.3, 22.0, 0.3);
+        color *= 1.0 + 0.3 * flecks * (1.0 - sandstone) * detail;
+        float layers = sin(world_pos.y * 11.0 + blotch(world_pos * 1.5) * 4.0);
+        color *= 1.0 + 0.13 * layers * sandstone;
+        float lichen = smoothstep(0.58, 0.72, blotch(world_pos * 2.7 + 3.1))
+                     * smoothstep(0.3, 0.8, normalize(world_normal).y);
+        color = mix(color, mix(vec3(0.44, 0.47, 0.33), vec3(0.66, 0.45, 0.20), sandstone),
+                    lichen * 0.6);
+        sheen = 0.04 + 0.4 * wetness;
+        color *= 1.0 - 0.35 * wetness;
     }
     vec3 bump = vec3(0.0);   // world-space tilt of the normal
+    if (material == ROCK) {
+        // Rough, chipped surface.
+        vec3 q = world_pos * 5.0;
+        bump = (vec3(blotch(q), blotch(q + 11.0), blotch(q + 23.0)) - 0.5) * 0.7 * detail;
+    }
     if (material == PODS) {
         // Packed little pods, each a dome: pale where it bulges out, ochre
         // around, dark in the gaps; some still green, some ripened brown.
@@ -177,14 +202,18 @@ void main() {
     float side = gl_FrontFacing ? 1.0 : -1.0;
     vec3 n = normalize(world_normal) * side;
     vec3 N = normalize(view_normal) * side;
-    if (material == PODS) {
+    if (material == PODS || material == ROCK) {
         bump -= n * dot(bump, n);
         n = normalize(n + bump);
         N = normalize(N + mat3(p3d_ViewMatrix) * bump);
     }
-    // Fresh snow settles on the tops of branches.
-    if (material == NEEDLES || material == FOLIAGE) {
-        float snow = snow_cover * smoothstep(0.3, 0.7, n.y) * (0.75 + 0.25 * blotch(world_pos * 5.0));
+    // Fresh snow settles on the tops of branches and rocks.
+    if (material == NEEDLES || material == FOLIAGE || material == ROCK) {
+        // Above the snow line (as in terrain.frag) rocks keep it all year.
+        float snow_line = 37.0 - 15.0 * snow_cover;
+        float lying = material == ROCK ? smoothstep(snow_line, snow_line + 3.0, world_pos.y) : 0.0;
+        float snow = max(snow_cover, lying) * smoothstep(0.3, 0.7, n.y)
+                   * (0.75 + 0.25 * blotch(world_pos * 5.0));
         color = mix(color, vec3(0.92, 0.94, 0.98), snow);
     }
     vec3 L = normalize(p3d_LightSource[0].position.xyz);

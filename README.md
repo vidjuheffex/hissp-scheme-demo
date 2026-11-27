@@ -186,5 +186,17 @@ gaps, and fresh snow settles on the tops of branches; `plant.vert` sways
 trees in the wind. You can't walk through trunks: each chunk keeps its
 trees' positions for `keep-out-of-trunks!` in `src/world_game.sld`.
 
+## Rocks
+
+Rocks are built by `make-rock` in `src/world_plants.sld`, lumpy shapes
+chipped flat by a few random planes and half-buried: grey boulders, crags
+and slabs, and warm sandstone in desert and dry grassland. They come in
+groups, more on steep slopes, at the waterline, on high ground and in the
+odd boulder field; `ROCK-CHANCE`, `FIELD-ROCK-CHANCE`, `SLOPE-ROCK-CHANCE`,
+`SHORE-ROCK-CHANCE`, `HIGH-ROCK-CHANCE` and `GROUPS` set how many.
+`plant.frag` gives them mottling, granite flecks or sandstone layers,
+lichen on top, snow, and a dark wet sheen in rain. Big boulders block the
+player like trunks.
+
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.

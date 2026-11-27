@@ -1,7 +1,8 @@
 ;; Desert plants, Chihuahuan style: prickly pear, barrel cactus and cholla,
 ;; plus ocotillo and agave. And trees: oak groves in grassland, conifers in
 ;; the snow and up the mountains to the tree line, junipers scattered over
-;; dry grassland and the odd mesquite in the desert.
+;; dry grassland and the odd mesquite in the desert. And rocks, in groups
+;; on slopes, shores and high ground.
 ;;
 ;; Each species is modeled once per run as a few randomly built 3D variants,
 ;; each pre-turned to several headings (the "templates"). A chunk's plants
@@ -76,7 +77,7 @@
     ;; The uvs aren't texture coordinates: for the plant shader, u is the
     ;; material (its whole part) and an `across` value (its fraction): the
     ;; position across an agave leaf, from trunk to tip of a conifer tier,
-    ;; or bottom to top of a clump of leaves. v is the height above the
+    ;; or bottom to top of a clump of leaves, or a rock's grain. v is the height above the
     ;; plant's base.
 
     (define MAT-PAD 0.0)     ; prickly pear pad
@@ -89,6 +90,7 @@
     (define MAT-NEEDLES 7.0)
     (define MAT-FOLIAGE 8.0) ; broadleaf clumps
     (define MAT-PODS 9.0)    ; agave flower and seed pod clusters
+    (define MAT-ROCK 10.0)
 
     (define (make-builder) (list (vector) (vector) (vector) (vector) (vector) (vector MAT-PLAIN)))
 
@@ -564,6 +566,66 @@
                               (jitter rng foliage 0.06)))
                     clumps))))
 
+    ;; --- rocks ------------------------------------------------------------
+
+    ;; Rocks: a lumpy ellipsoid about a meter across, chipped flat by a few
+    ;; random planes, its bottom `sink` of its height buried. A form gives
+    ;; its height over its width as `flat`, how many `cuts`, the size of
+    ;; its `lumps`, its `color` and its `grain`, -1 speckled granite to 1
+    ;; banded sandstone (see plant.frag).
+    (define BOULDER
+      '((flat 0.6 0.85) (cuts 3 5) (lumps . 0.12) (color 0.50 0.49 0.47) (grain . -1.0)))
+    (define CRAG
+      '((flat 0.75 1.1) (cuts 7 9) (lumps . 0.05) (color 0.46 0.45 0.44) (grain . -1.0)))
+    (define SLAB
+      '((flat 0.3 0.45) (cuts 5 7) (lumps . 0.06) (color 0.48 0.47 0.45) (grain . -1.0)))
+    (define SANDSTONE
+      '((flat 0.5 0.85) (cuts 5 7) (lumps . 0.08) (color 0.66 0.47 0.33) (grain . 1.0)))
+    (define SANDSTONE-SLAB
+      '((flat 0.3 0.5) (cuts 5 7) (lumps . 0.05) (color 0.70 0.54 0.39) (grain . 1.0)))
+
+    (define (make-rock form)
+      (lambda (b rng)
+        (define (get key) (cdr (assq key form)))
+        (define (uniform lo hi) (call-method rng 'uniform lo hi))
+        (let* ((sy (uniform (car (get 'flat)) (cadr (get 'flat))))
+               (sz (uniform 0.65 1.0))
+               (sink 0.4)
+               (lumps (get 'lumps))
+               (a (uniform 0.0 6.0))
+               (c (uniform 0.0 6.0))
+               (color (jitter rng (get 'color) 0.08))
+               ;; Each cut: (normal distance), mostly from the sides and top.
+               (cuts (map (lambda (k)
+                            (list (heading (uniform 0.0 (* 2.0 PI)) (uniform 0.2 1.9))
+                                  (uniform 0.62 0.9)))
+                          (iota (call-method rng 'randint
+                                             (car (get 'cuts)) (cadr (get 'cuts)))))))
+          (set-material! b MAT-ROCK)
+          (band! b 7 12
+                 (lambda (j i)
+                   (let* ((phi (- (* PI (/ j 7.0)) (/ PI 2.0)))
+                          (theta (* -2.0 PI (/ i 12.0)))
+                          (d (list (* (cos phi) (cos theta)) (sin phi) (* (cos phi) (sin theta))))
+                          (lump (+ 1.0 (* lumps (sin (+ (* 3.3 (x-of d)) a))
+                                          (sin (+ (* 2.9 (z-of d)) (* 2.1 (y-of d)) c)))))
+                          (shape (list (* lump (x-of d)) (* lump sy (y-of d)) (* lump sz (z-of d))))
+                          (smooth-n (normalize (list (x-of d) (/ (y-of d) sy) (/ (z-of d) sz))))
+                          ;; Pulled back onto the deepest cut it pokes through,
+                          ;; facing that cut.
+                          (cut (fold (lambda (cut best)
+                                       (let ((over (/ (dot shape (car cut)) (cadr cut))))
+                                         (if (> over (car best)) (cons over cut) best)))
+                                     (list 1.0) cuts))
+                          (p (if (pair? (cdr cut)) (v* shape (/ 1.0 (car cut))) shape))
+                          (n (if (pair? (cdr cut))
+                                 (normalize (v+ (v* (cadr cut) 0.8) (v* smooth-n 0.2)))
+                                 smooth-n)))
+                     (list (v- p (list 0.0 (* sink sy) 0.0))
+                           n
+                           (v* color (+ 0.85 (* 0.2 (y-of d))))
+                           (get 'grain))))))))
+
     ;; --- templates --------------------------------------------------------
 
     (define VARIANTS 12)
@@ -645,8 +707,19 @@
                                 acc))))))
           species)))
 
+    ;; Like TREES: the last is how wide a rock blocks the player, for its
+    ;; size, or 0 for rocks low enough to step over.
+    (define ROCKS
+      (vector (list (make-rock BOULDER) 0.5 2.4 0.2 0.8)
+              (list (make-rock CRAG) 0.5 2.0 0.2 0.75)
+              (list (make-rock SLAB) 0.7 2.2 0.15 0.0)
+              (list (make-rock SANDSTONE) 0.5 2.4 0.2 0.8)
+              (list (make-rock SANDSTONE-SLAB) 0.7 2.4 0.15 0.0)))
+    (define ROCK-VARIANTS 8)
+
     (define TEMPLATES (build-templates SPECIES VARIANTS 7))
     (define TREE-TEMPLATES (build-templates TREES TREE-VARIANTS 11))
+    (define ROCK-TEMPLATES (build-templates ROCKS ROCK-VARIANTS 13))
 
     ;; --- placement --------------------------------------------------------
 
@@ -674,6 +747,27 @@
     (define TREE-SHORE 1.5)
     (define TREE-MAX-GRADIENT 0.7)
     (define TREE-SPOTS-PER-SIDE (exact (round (/ CHUNK-SIZE TREE-SPACING))))
+
+    (define ROCK-SPACING 4.0)
+    (define ROCK-CHANCE 0.02)          ; per spot, anywhere
+    (define FIELD-ROCK-CHANCE 0.3)     ; per spot, mid boulder field
+    (define SLOPE-ROCK-CHANCE 0.15)    ; per spot, on the steepest slopes
+    (define SHORE-ROCK-CHANCE 0.15)    ; per spot, at the waterline
+    (define HIGH-ROCK-CHANCE 0.08)     ; per spot, in the bare rock band
+    (define FIELD-FREQUENCY (/ 1.0 60.0))
+    (define FIELDS (list 0.6 0.8))     ; field noise ramp from none to full
+    ;; Rocks come in groups with bare ground between: the chance is scaled
+    ;; by a finer noise, ramped from none to double.
+    (define GROUP-FREQUENCY (/ 1.0 18.0))
+    (define GROUPS (list 0.4 0.75))
+    (define ROCK-SLOPES (list 0.45 1.1))
+    (define ROCK-BAND (list 24.0 32.0))
+    (define SHORE-BAND 1.8)            ; meters either side of the waterline
+    ;; None this far above the ground (meters) this many meters around.
+    (define CRESTS (list (list 4.0 0.5) (list 10.0 1.5)))
+    (define BLOCKING-SIZE 0.55)        ; rocks this wide or more block the player
+    (define ROCK-SPOTS-PER-SIDE (exact (round (/ CHUNK-SIZE ROCK-SPACING))))
+    (define GREY-MIX (list (list 0.45 0) (list 0.75 1) (list 1.0 2)))
 
     (define (pick mix r)
       (if (or (null? (cdr mix)) (< r (car (car mix))))
@@ -714,7 +808,8 @@
     ;; Plant mesh data for the chunk at world (ox, oz), from the terrain
     ;; vertices and biome colors `chunk-mesh-data` made for it. Returns
     ;; (vertices normals colors triangles uvs trunks), or #f if nothing
-    ;; grows, where `trunks` lists each tree's world (x z radius).
+    ;; grows, where `trunks` lists the world (x z radius) of each tree and
+    ;; boulder the player can't walk through.
     (define (chunk-plants ox oz terrain biomes pause)
       (let* ((seed (seed-offset))
              (parts '())
@@ -797,6 +892,39 @@
                   (set! trunks (cons (list (+ ox lx) (+ oz lz)
                                            (* scale (list-ref (vector-ref TREES kind) 4)))
                                      trunks)))))))
+        (each-spot ROCK-SPACING ROCK-SPOTS-PER-SIDE 90
+          (lambda (rand lx lz g w-desert w-dry w-snowy)
+            (let* ((h (car g))
+                   (shore (- 1.0 (smooth 0.0 SHORE-BAND (abs (- h SEA-LEVEL 0.3)))))
+                   ;; Few in the snow, where bare rocks look dropped on top.
+                   (chance (* 2.0 (- 1.0 (* 0.8 w-snowy))
+                              (ramp GROUPS (noise-at lx lz GROUP-FREQUENCY))
+                              (+ ROCK-CHANCE
+                                 (* FIELD-ROCK-CHANCE (ramp FIELDS (noise-at lx lz FIELD-FREQUENCY)))
+                                 (* SLOPE-ROCK-CHANCE (ramp ROCK-SLOPES (cadr g)))
+                                 (* SHORE-ROCK-CHANCE shore)
+                                 (* HIGH-ROCK-CHANCE (ramp ROCK-BAND h))))))
+              ;; Not on crests and peaks, where they'd stick up against the sky.
+              (define (crest?)
+                (let ((x (+ ox lx)) (z (+ oz lz)))
+                  (let loop ((crests CRESTS))
+                    (and (pair? crests)
+                         (let ((r (car (car crests))))
+                           (or (> (- h (* 0.25 (+ (terrain-height (+ x r) z) (terrain-height (- x r) z)
+                                                  (terrain-height x (+ z r)) (terrain-height x (- z r)))))
+                                  (cadr (car crests)))
+                               (loop (cdr crests))))))))
+              (when (and (> h (- SEA-LEVEL 1.5)) (< (rand 0) chance) (not (crest?)))
+                (let* ((kind (if (< (rand 4) (smooth 0.4 0.8 (+ w-desert (* 0.6 w-dry))))
+                                 (if (< (rand 3) 0.35) 4 3)
+                                 (pick GREY-MIX (rand 3))))
+                       ;; Mostly small rocks, the odd big boulder.
+                       (scale (add! ROCKS ROCK-TEMPLATES ROCK-VARIANTS kind
+                                    (lambda (k) (if (= k 6) (expt (rand 6) 1.6) (rand k)))
+                                    lx h (cadr g) lz))
+                       (width (* scale (list-ref (vector-ref ROCKS kind) 4))))
+                  (when (>= width BLOCKING-SIZE)
+                    (set! trunks (cons (list (+ ox lx) (+ oz lz) width) trunks))))))))
         (and (pair? parts)
              (let ((parts (reverse parts)))
                (append
