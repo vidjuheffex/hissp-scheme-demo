@@ -78,7 +78,11 @@ float sun_shadow() {
 void main() {
     vec3 n = normalize(world_normal);
     float h = world_pos.y;
-    float slope = 1.0 - n.y;
+    // Across a sharp lip the lighting normal rolls from wall to floor.
+    // Limit sediment on the steep triangle even near its smooth vertices.
+    vec3 face = normalize(cross(dFdx(world_pos), dFdy(world_pos)));
+    float exposure = 1.0 - smoothstep(0.20, 0.60, abs(face.y));
+    float slope = max(1.0 - n.y, exposure);
 
     // Large, slow brightness variation that breaks up repetition and band edges.
     float macro = luma(texture(grass_tex, world_pos.xz / 211.0).rgb) * 2.0 - 0.6;
@@ -140,8 +144,8 @@ void main() {
     // Bare rock band on high ground, except where snow covers it.
     albedo = mix(albedo, rock, smoothstep(26.0, 34.0, h + jitter * 2.0) * (1.0 - w_snowy));
     albedo = mix(albedo, rock * strata, smoothstep(0.28, 0.45, slope));
-    albedo = mix(albedo, sand, 1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h));
-    albedo = mix(albedo, seabed, 1.0 - smoothstep(sea_level - 1.5, sea_level, h));
+    albedo = mix(albedo, sand, (1.0 - exposure) * (1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h)));
+    albedo = mix(albedo, seabed, (1.0 - exposure) * (1.0 - smoothstep(sea_level - 1.5, sea_level, h)));
     // Wet ground is darker, except under snow: after rain, and always in a
     // band where the water laps the shore.
     float lapped = 1.0 - smoothstep(sea_level + 0.05, sea_level + 0.5 + jitter * 0.2, h);

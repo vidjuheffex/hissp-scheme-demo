@@ -267,8 +267,12 @@ What the cut looks like depends on the land it goes through:
 - **Higher ground** (`CANYON-RISE`, 8 to 16 m above the sea): the same cut
   drops over a meter or two instead, a canyon with sheer walls, a sandy
   floor and the river down the middle.
-- **Desert and dry grassland**: the bed stays above the water, a dry wash,
-  or a dry canyon through higher ground.
+- **Desert and dry grassland**: the bed stays above water. In higher ground,
+  sandstone shelves split the face into a lower bluff and an upper wall.
+  A seeded noise sampled every 8 m makes each shelf widen and taper along
+  the bank. The shelf is part of the terrain, so you can stand on it.
+  In the desert, a wide shelf with a drop on one side and rock behind it
+  can support a mesquite. Fallen sandstone collects in groups at the foot.
 
 Cliff country, rarer (about a tenth of the land, `CLIFF-REGIONS`), turns
 hills, and flat desert as mesas, into sheer steps of 6 m (`CLIFF-STEP`) with
@@ -276,7 +280,9 @@ level ground between: escarpments and buttes. The steps go on before the
 carve, so rivers cut through them and stay wet.
 
 Steep rock shows its strata in `terrain.frag`: bands by height, grey-brown
-in most places and red and buff like sandstone in dry country.
+in most places and red and buff like sandstone in dry country. The shader
+uses the triangle's slope to keep sand off near-vertical faces at the rim
+and the waterline.
 
 You can walk up anything up to about 63 degrees (`MAX-CLIMB` in
 `src/world_game.sld`), which takes in even the steepest ordinary hillsides,
@@ -293,8 +299,10 @@ build no slower than before.
 Caves open where a canyon wall or an escarpment rises sheer from the
 ground. The world is split into 160 m sites (`SITE` in
 `src/world_caves.sld`); each looks along a few rays for a wall rising 6 m
-within two meters (`WALL-RISE`), and most that find one get a cave
-(`SITE-CHANCE`). Each cave is one of three sizes, picked at random:
+within two meters (`WALL-RISE`). The search checks the ground 6 m out
+from the entrance so a shelf above a sheer drop doesn't qualify as an
+approach. Most sites that find a wall get a cave (`SITE-CHANCE`). Each cave
+is one of three sizes, picked at random:
 
 - **Small**: a short burrow of two or three bends ending in a small chamber.
 - **Medium**: a longer tunnel with up to three chambers and maybe a side

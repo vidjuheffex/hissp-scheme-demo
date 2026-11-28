@@ -143,15 +143,21 @@
                       (let scan ((i 0))
                         (if (>= i RAY)
                             (try (+ n 1))
-                            (let ((h (vector-ref heights i)))
+                            (let* ((h (vector-ref heights i))
+                                   (j (if (> (- (vector-ref heights (+ i 1)) h) 1.5) i (+ i 1))))
                               (if (and (>= (- (vector-ref heights (+ i 2)) h) WALL-RISE)
                                        (>= (- (vector-ref heights (+ i 3)) h) WALL-RISE)
                                        (> h (+ SEA-LEVEL FLOOR-ABOVE-SEA))
                                        ;; not up on a ledge you can't walk to
-                                       (< (- h (terrain-height (+ px (* dx (- i 3))) (+ pz (* dz (- i 3))))) 3.0))
-                                  (let ((j (if (> (- (vector-ref heights (+ i 1)) h) 1.5) i (+ i 1))))
-                                    (vector (+ px (* dx j)) (+ (vector-ref heights j) 0.1)
-                                            (+ pz (* dz j)) dx dz))
+                                       (< (- h (terrain-height (+ px (* dx (- i 3))) (+ pz (* dz (- i 3))))) 3.0)
+                                       ;; The apron can fit on a narrow shelf with a sheer
+                                       ;; drop just outside it. Check the approach as well.
+                                       (< (- (vector-ref heights j)
+                                             (if (>= j 6) (vector-ref heights (- j 6))
+                                                 (terrain-height (+ px (* dx (- j 6))) (+ pz (* dz (- j 6))))))
+                                          3.0))
+                                  (vector (+ px (* dx j)) (+ (vector-ref heights j) 0.1)
+                                          (+ pz (* dz j)) dx dz)
                                   (scan (+ i 1))))))))))))
 
     (define (site-mouth cx cz)

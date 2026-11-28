@@ -855,6 +855,7 @@
     (define FOREST-CHANCE 0.95)        ; per spot, in the densest wet forest (see `woods`)
     (define JUNIPER-CHANCE 0.09)       ; per spot, in full dry grassland
     (define MESQUITE-CHANCE 0.018)      ; per spot, in full desert
+    (define LEDGE-MESQUITE-CHANCE 0.24)
     (define MOUNTAIN-PINES (list 17.0 24.0))  ; heights where conifers replace oaks
     (define TREE-LINE (list 27.0 31.0))
     (define TREE-SHORE 1.5)
@@ -875,6 +876,7 @@
     (define FIELD-ROCK-CHANCE 0.3)     ; per spot, mid boulder field
     (define SLOPE-ROCK-CHANCE 0.15)    ; per spot, on the steepest slopes
     (define SHORE-ROCK-CHANCE 0.15)    ; per spot, at the waterline
+    (define TALUS-CHANCE 0.65)         ; in rock groups under a dry wall
     (define HIGH-ROCK-CHANCE 0.08)     ; per spot, in the bare rock band
     (define FIELD-FREQUENCY (/ 1.0 60.0))
     (define FIELDS (list 0.6 0.8))     ; field noise ramp from none to full
@@ -995,6 +997,19 @@
         (define (noise-at lx lz frequency)
           (value-noise (* (+ ox lx (car seed)) frequency)
                        (* (+ oz lz (cadr seed)) frequency)))
+        ;; Read the same terrain grid across chunk boundaries. A ledge
+        ;; needs a drop on its open side, a rockfall only a wall above it.
+        (define (beside-wall? lx lz h ledge?)
+          (let ((i (exact (round (/ lx CELL)))) (j (exact (round (/ lz CELL)))))
+            (define (height-at i j)
+              (if (and (<= 0 i CHUNK-RES) (<= 0 j CHUNK-RES))
+                  (vector-ref terrain (+ 1 (* 3 (+ i (* j VERTS)))))
+                  (terrain-height (+ ox (* i CELL)) (+ oz (* j CELL)))))
+            (define (across? a b)
+              (and (> (max a b) (+ h 3.5))
+                   (or (not ledge?) (< (min a b) (- h 2.5)))))
+            (or (across? (height-at (- i 5) j) (height-at (+ i 5) j))
+                (across? (height-at i (- j 5)) (height-at i (+ j 5))))))
         (each-spot PLANT-SPACING SPOTS-PER-SIDE 0
           (lambda (rand lx lz g w-desert w-dry w-snowy woods)
             (let ((chance (+ (* DESERT-PLANT-CHANCE w-desert) (* DRY-PLANT-CHANCE w-dry)))
@@ -1015,11 +1030,15 @@
                    (w-grass (max 0.0 (- 1.0 w-desert w-dry w-snowy)))
                    (mountain (ramp MOUNTAIN-PINES h))
                    (forest (* FOREST-CHANCE woods))
+                   (mesquite (if (and (> w-desert 0.4) (< (cadr g) TREE-MAX-GRADIENT)
+                                      (> h (+ SEA-LEVEL TREE-SHORE)) (< h (cadr TREE-LINE))
+                                      (beside-wall? lx lz h #t))
+                                 LEDGE-MESQUITE-CHANCE MESQUITE-CHANCE))
                    ;; By TREES index: conifer, oak, juniper, mesquite.
                    (weights (list (* forest (+ w-snowy (* w-grass mountain)))
                                   (* forest w-grass (- 1.0 mountain))
                                   (* JUNIPER-CHANCE w-dry)
-                                  (* MESQUITE-CHANCE w-desert)))
+                                  (* mesquite w-desert)))
                    (chance (* (apply + weights) (- 1.0 (ramp TREE-LINE h)))))
               (when (and (> chance 0.0)
                          (> h (+ SEA-LEVEL TREE-SHORE))
@@ -1063,6 +1082,10 @@
                                  (* FIELD-ROCK-CHANCE (ramp FIELDS (noise-at lx lz FIELD-FREQUENCY)))
                                  (* SLOPE-ROCK-CHANCE (ramp ROCK-SLOPES (cadr g)))
                                  (* SHORE-ROCK-CHANCE shore)
+                                 (if (and (> w-desert 0.4) (> h SEA-LEVEL)
+                                          (< h (+ SEA-LEVEL 2.0)) (< (cadr g) 0.7)
+                                          (beside-wall? lx lz h #f))
+                                     (* w-desert TALUS-CHANCE) 0.0)
                                  (* HIGH-ROCK-CHANCE (ramp ROCK-BAND h))))))
               ;; Not on crests and peaks, where they'd stick up against the sky.
               (define (crest?)

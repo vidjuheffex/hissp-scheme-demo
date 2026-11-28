@@ -290,7 +290,7 @@
     (define CLIFF-STEP 6.0)               ; meters per step
     (define CLIFF-EDGE 0.012)             ; half the share of a step's noise it rises over
 
-    ;; #(channel cliff-region cliff-steps) noises at one lattice point.
+    ;; #(channel cliff-region cliff-steps sandstone) noises at one lattice point.
     (define (feature-noises x z)
       (let* ((sx (+ x SEED-X))
              (sz (+ z SEED-Z))
@@ -301,7 +301,8 @@
         (vector (fbm (+ (* wx RIVER-FREQUENCY) 5.5) (+ (* wz RIVER-FREQUENCY) 9.7) 2)
                 (value-noise (+ (* sx CLIFF-REGION-FREQUENCY) 41.9)
                              (+ (* sz CLIFF-REGION-FREQUENCY) 3.3))
-                (fbm (+ (* sx CLIFF-FREQUENCY) 27.1) (+ (* sz CLIFF-FREQUENCY) 61.7) 2))))
+                (fbm (+ (* sx CLIFF-FREQUENCY) 27.1) (+ (* sz CLIFF-FREQUENCY) 61.7) 2)
+                (value-noise (/ sx 28.0) (/ sz 28.0)))))
 
     (define (direct-corner ix iz)
       (feature-noises (* ix FEATURE-STEP) (* iz FEATURE-STEP)))
@@ -318,9 +319,10 @@
     (define (blend-corners a b c d u v)
       (vector (bilerp (vector-ref a 0) (vector-ref b 0) (vector-ref c 0) (vector-ref d 0) u v)
               (bilerp (vector-ref a 1) (vector-ref b 1) (vector-ref c 1) (vector-ref d 1) u v)
-              (bilerp (vector-ref a 2) (vector-ref b 2) (vector-ref c 2) (vector-ref d 2) u v)))
+              (bilerp (vector-ref a 2) (vector-ref b 2) (vector-ref c 2) (vector-ref d 2) u v)
+              (bilerp (vector-ref a 3) (vector-ref b 3) (vector-ref c 3) (vector-ref d 3) u v)))
 
-    ;; The feature noises at (x, z): #(channel cliff-region cliff-steps).
+    ;; The feature noises at (x, z), interpolated from the world lattice.
     (define (features x z)
       (let-values (((ix iz u v) (lattice-cell x z)))
         (blend-corners (direct-corner ix iz) (direct-corner (+ ix 1) iz)
@@ -404,7 +406,7 @@
 
     ;; Height `h` cut down by a channel `dist` meters away; `dry` (0 to 1)
     ;; lifts the bed out of the water.
-    (define (carve h dist dry)
+    (define (carve h dist dry sandstone)
       (if (and (> dist RIVER-WIDTH) (> (lowest-cut dist) (+ h VALLEY-ROUNDING)))
           h
           (let* ((canyon (ramp-between (car CANYON-RISE) (cadr CANYON-RISE) (- h SEA-LEVEL)))
@@ -412,12 +414,20 @@
                  (edge (if (> floor (+ SEA-LEVEL BANK-HEIGHT)) floor (+ SEA-LEVEL BANK-HEIGHT)))
                  (valley (if (< dist RIVER-WIDTH)
                              (lerp floor edge (smooth (/ dist RIVER-WIDTH)))
-                             (let ((s (- dist RIVER-WIDTH))
-                                   (flat (* canyon CANYON-FLOOR))
-                                   (slope (lerp BANK-SLOPE CANYON-WALL canyon)))
-                               (if (< s flat)
+                             (let* ((s (- dist RIVER-WIDTH))
+                                    (flat (* canyon CANYON-FLOOR))
+                                    (slope (lerp BANK-SLOPE CANYON-WALL canyon))
+                                    (width (* 7.0 dry (ramp-between 12.0 18.0 (- h edge))
+                                              (ramp-between 0.26 0.76 sandstone)))
+                                    (rise (- s flat)))
+                               (if (<= rise 0.0)
                                    (+ edge (* 0.05 s))
-                                   (+ edge (* 0.05 flat) (* slope (- s flat))))))))
+                                   ;; The upper face retreats above a thick basal bed.
+                                   ;; Cave mouths need the full rise at the foot.
+                                   (+ edge (* 0.05 flat)
+                                      (max (* slope (- rise width))
+                                           (min (* slope rise)
+                                                (+ 8.0 (* 1.5 sandstone) (* 0.10 rise))))))))))
             (smooth-min h valley (* VALLEY-ROUNDING (- 1.0 canyon))))))
 
     ;; Biome height `h` with cliffs and channels, for feature noises `f`.
@@ -425,7 +435,7 @@
       (let ((dryness (+ desert dry)))
         (carve (cliff-steps h desert (vector-ref f 1) (vector-ref f 2))
                (channel-meters (vector-ref f 0))
-               (if (> dryness 1.0) 1.0 dryness))))
+               (if (> dryness 1.0) 1.0 dryness) (vector-ref f 3))))
 
     ;; REPL and the game: meters from the nearest channel's line, and how
     ;; much cliff country's stepping applies, at (x, z).

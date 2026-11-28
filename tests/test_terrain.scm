@@ -61,6 +61,24 @@
              (let ((c (climate 100.0 -250.0)))
                (and (= (length c) 2) (finite? (car c)) (finite? (cadr c)))))
 
+;; Cross both banks of the dry wash. A ledge has room to stand between
+;; two rises, several meters above the wash and below the rim.
+(test-assert "dry canyon walls expose broad shelves partway up the face"
+  (let rows ((z -1836))
+    (and (<= z -1800)
+         (or (let bank ((x -1465))
+               (and (< x -1430)
+                    (or (let ((h (terrain-height x z)))
+                          (and (< 10 h 17)
+                               (< (abs (- h (terrain-height (+ x 1) z))) 0.45)
+                               (< (abs (- h (terrain-height (+ x 2) z))) 0.6)
+                               (let ((a (terrain-height (- x 5) z))
+                                     (b (terrain-height (+ x 7) z)))
+                                 (and (< (min a b) (- h 3))
+                                      (> (max a b) (+ h 3))))))
+                        (bank (+ x 1)))))
+             (rows (+ z 2))))))
+
 ;; --- chunk meshes --------------------------------------------------------------
 
 (define VERTS (+ CHUNK-RES 1))
