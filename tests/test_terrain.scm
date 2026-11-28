@@ -1,7 +1,5 @@
 ;; (world terrain): noise, seeds, heights, biomes and chunk meshes.
 
-;; (scheme base) has to come before the include, or the included forms
-;; expand with Hissp's own `let`.
 (import (scheme base))
 (include "helpers.scm")
 (import (world terrain))

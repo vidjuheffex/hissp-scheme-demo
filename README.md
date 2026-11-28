@@ -76,9 +76,8 @@ The suites need no window and use world seed 4242 so results repeat:
 - `test_caves.scm`: see [Caves](#caves).
 
 Shared checks (mesh validity, ranges, test names) are in `tests/helpers.scm`.
-A suite file starts with `(import (scheme base))` before
-`(include "helpers.scm")`; included first, the helpers expand with Hissp's own
-`let` and fail to compile.
+Each suite is an R7RS program, so its imports come first: `(import (scheme base))`
+before `(include "helpers.scm")`, since the helpers use syntax that library brings in.
 
 ## Live development
 
