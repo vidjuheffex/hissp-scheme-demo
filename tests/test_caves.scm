@@ -1,43 +1,28 @@
-;; Cave regressions: mouths, chunk seams and walking, without a window.
-;;
-;;   uv run main.py tests/test_caves.scm
+;; (world caves): mouths, chunk seams, walking, darkness and clearings.
 ;;
 ;; Checks the caves of world seed 4242 for holes, repeated edges and
 ;; reversed faces across whole blocks of chunks, then walks the player's
 ;; climb and headroom rules in and out of every mouth and along each main
 ;; tunnel.
 
-(import (scheme base)
-        (scheme inexact)
-        (scheme python)
-        (scheme write)
-        (srfi 64)
-        (srfi 69)
-        (rename (only sys exit) (exit sys-exit))
-        (only (world terrain) CHUNK-SIZE set-world-seed! terrain-height chunk-mesh-data)
-        (only (world caves) cave-chunk-data cave-ground cave-headroom? caves-ready-near!
-              site-cave capsule solid-field))
+(import (scheme base))
+(include "helpers.scm")
+(import (scheme python)
+        (only (world terrain) CHUNK-SIZE SEA-LEVEL set-world-seed! terrain-height chunk-mesh-data)
+        (world caves)
+        (only (world plants) chunk-plants))
 
 (set-world-seed! 4242)
 
 (define SITES '((-4 3) (-3 2) (-1 -4) (0 -1) (0 3) (2 2) (3 -2) (0 4)))
 (define MAX-CLIMB 2.0)   ; as the game's: meters of rise per meter walked
 
-(define (named . parts)
-  (apply string-append
-         (map (lambda (p) (cond ((string? p) p)
-                                ((number? p) (number->string p))
-                                (else (let ((out (open-output-string))) (write p out) (get-output-string out)))))
-              parts)))
-
-(define (no-pause) #f)
-
 ;; (vertices normals triangles cave?) for the chunk at (cx, cz), its cave
 ;; mesh where a cave reaches it.
-(define meshes (make-hash-table))
-(define (mesh cx cz)
+(define cave-meshes (make-hash-table))
+(define (cave-mesh cx cz)
   (let ((key (list cx cz)))
-    (or (hash-table-ref/default meshes key #f)
+    (or (hash-table-ref/default cave-meshes key #f)
         (let* ((ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
                (data (chunk-mesh-data ox oz no-pause
                                       (lambda (heights colors normals)
@@ -46,7 +31,7 @@
                (m (if cave
                       (list (car cave) (cadr cave) (list-ref cave 4) #t)
                       (list (car data) (cadr data) (list-ref data 2) #f))))
-          (hash-table-set! meshes key m)
+          (hash-table-set! cave-meshes key m)
           m))))
 
 ;; --- a mouth on the ground --------------------------------------------------
@@ -92,7 +77,7 @@
       (hash-table-update!/default edges (+ (* a 4294967296) b) (lambda (n) (+ n 1)) 0))
     (do ((cx (- c0x 1) (+ cx 1))) ((> cx (+ c1x 1)))
       (do ((cz (- c0z 1) (+ cz 1))) ((> cz (+ c1z 1)))
-        (let* ((m (mesh cx cz))
+        (let* ((m (cave-mesh cx cz))
                (vs (car m)) (ns (cadr m)) (ts (list-ref m 2))
                (check-faces (and (list-ref m 3) (<= c0x cx c1x) (<= c0z cz c1z)))
                (ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
@@ -175,22 +160,24 @@
                     (loop next (car moved) (cadr moved) (list-ref moved 2) (+ steps 1))
                     (named "blocked " along " m along"))))))))
 
-;; Follows the cave's main tunnel, its first chain of joined segments, from
-;; the mouth in. #t, or where it got stuck.
+;; The cave's main tunnel: its first chain of joined segments, from the mouth in.
+(define (main-chain cave)
+  (let ((prims (vector-ref cave 0)))
+    (let collect ((k 0) (out '()))
+      (if (or (= k (vector-length prims))
+              (not (= (vector-ref (vector-ref prims k) 0) 0))
+              (and (> k 0)
+                   (let ((p (vector-ref prims k)) (q (vector-ref prims (- k 1))))
+                     (or (> (abs (- (vector-ref p 1) (vector-ref q 4))) 1e-6)
+                         (> (abs (- (vector-ref p 3) (vector-ref q 6))) 1e-6)))))
+          (reverse out)
+          (collect (+ k 1) (cons (vector-ref prims k) out))))))
+
+;; Follows the main tunnel from the mouth in. #t, or where it got stuck.
 (define (walk-tunnel cave)
-  (let* ((prims (vector-ref cave 0))
-         (path (let collect ((k 0) (out '()))
-                 (if (or (= k (vector-length prims))
-                         (not (= (vector-ref (vector-ref prims k) 0) 0))
-                         (and (> k 0)
-                              (let ((p (vector-ref prims k)) (q (vector-ref prims (- k 1))))
-                                (or (> (abs (- (vector-ref p 1) (vector-ref q 4))) 1e-6)
-                                    (> (abs (- (vector-ref p 3) (vector-ref q 6))) 1e-6)))))
-                     (reverse out)
-                     (let ((p (vector-ref prims k)))
-                       (collect (+ k 1)
-                                (cons (list (vector-ref p 4) (vector-ref p 6))
-                                      (if (= k 0) (list (list (vector-ref p 1) (vector-ref p 3))) out))))))))
+  (let* ((chain (main-chain cave))
+         (path (cons (list (vector-ref (car chain) 1) (vector-ref (car chain) 3))
+                     (map (lambda (p) (list (vector-ref p 4) (vector-ref p 6))) chain))))
     (caves-ready-near! (car (car path)) (cadr (car path)))
     (let segment ((targets (cdr path)) (x (car (car path))) (z (cadr (car path)))
                   (feet (terrain-height (car (car path)) (cadr (car path)))) (n 1))
@@ -230,5 +217,51 @@
       (test-equal (named "cave " site ": main tunnel") #t (walk-tunnel cave))))
   SITES)
 
+;; --- layout, darkness, shelter, clearings -------------------------------------
+
+(define (chunk-origin v) (* CHUNK-SIZE (floor (/ v CHUNK-SIZE))))
+
+(for-each
+  (lambda (site)
+    (let* ((cave (site-cave (car site) (cadr site)))
+           (mouth (car (vector-ref cave 1)))
+           (mx (vector-ref mouth 0)) (my (vector-ref mouth 1)) (mz (vector-ref mouth 2))
+           (dx (vector-ref mouth 3)) (dz (vector-ref mouth 4))
+           (name (lambda (what) (named "cave " site ": " what)))
+           ;; Out in the open in front of the mouth, and at the far end of
+           ;; the main tunnel, at eye height.
+           (ox (- mx (* 15.0 dx))) (oz (- mz (* 15.0 dz))) (oh (terrain-height ox oz))
+           (end (car (reverse (main-chain cave))))
+           (ex (vector-ref end 4)) (ez (vector-ref end 6)) (eh (terrain-height ex ez))
+           (efloor (cave-ground ex ez (+ (- (vector-ref end 5) (* 0.55 (vector-ref end 7))) 0.5) eh))
+           ;; Well away from this cave's box.
+           (box (vector-ref cave 3))
+           (fx (- (car box) 25.0)) (fz (- (cadr box) 25.0)) (fh (terrain-height fx fz)))
+      (caves-ready-near! mx mz)
+      (test-assert (name "the mouth's floor is above the sea") (> my SEA-LEVEL))
+      (test-assert (name "the mouth faces along a unit vector")
+                   (< (abs (- 1.0 (sqrt (+ (square dx) (square dz))))) 1e-6))
+      (test-equal (name "daylight out in front") 0.0 (cave-depth ox (+ oh 1.6) oz oh))
+      (test-equal (name "open sky out in front") 0.0 (cave-shelter ox (+ oh 1.6) oz oh))
+      (test-assert (name "the main tunnel has a floor at its end") efloor)
+      (when efloor
+        (test-assert (name "dark at the end of the main tunnel") (> (cave-depth ex (+ efloor 1.6) ez eh) 0.5))
+        (test-assert (name "sheltered at the end of the main tunnel")
+                     (> (cave-shelter ex (+ efloor 1.6) ez eh) 0.9)))
+      (caves-ready-near! fx fz)
+      (test-equal (name "no cave floor away from it") #f (cave-ground fx fz (+ fh 0.5) fh))
+      (test-assert (name "headroom away from it") (cave-headroom? fx fz fh fh))
+      ;; Plants keep out of the clearing in front of the mouth, as the game asks.
+      (let* ((cx (- mx (* 3.0 dx))) (cz (- mz (* 3.0 dz)))
+             (cox (chunk-origin cx)) (coz (chunk-origin cz))
+             (clear? (mouth-clearing cox coz 8.0 6.0))
+             (terrain (chunk-mesh-data cox coz no-pause))
+             (plants (chunk-plants cox coz (car terrain) (list-ref terrain 4) no-pause clear?)))
+        (test-assert (name "the ground in front of the mouth is kept clear") (clear? cx cz))
+        (test-equal (name "no trunks in the clearing") '()
+                    (if plants
+                        (filter (lambda (t) (clear? (car t) (cadr t))) (list-ref plants 5))
+                        '())))))
+  SITES)
+
 (test-end "caves")
-(sys-exit (test-exit-code))

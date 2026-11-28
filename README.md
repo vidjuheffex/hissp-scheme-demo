@@ -48,7 +48,37 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `tools/make_grass_clumps.py`, `tools/make_moon.py` — one-off generators for
   `grass_clumps.png` (grass, wildflower and fern sprites) and `moon.png`
   (`uv run --no-project --with pillow --with numpy tools/make_moon.py`)
-- `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`)
+- `main.py` — launcher only (transpiles the Scheme libraries, then runs `main.scm`,
+  or the `.scm` file given first on the command line)
+- `tests/` — SRFI 64 test suites in Scheme, one per library (see below)
+
+## Tests
+
+```sh
+uv run main.py tests/run.scm             # every suite, about a minute and a half; exits 1 on a failure
+uv run main.py tests/test_terrain.scm    # one suite while working on it
+```
+
+The suites need no window and use world seed 4242 so results repeat:
+
+- `test_state.scm`: values and the seed survive in `(world state)`.
+- `test_terrain.scm`: noise ranges, seeds giving the same and different worlds,
+  walkable ground versus the sea, biome shares, chunk meshes on the grid at
+  `terrain-height` with unit normals, upward faces and matching edges between
+  neighbors, water only where the ground dips under the sea, grass and its clearings.
+- `test_weather.scm`: targets, wind (unit direction, storms harder, nights
+  calmer), mist (none in the desert), blooms, rain soaking and drying the
+  ground and snow settling and melting, the rain and wind-line meshes.
+- `test_life.scm`: when fireflies, bats and birds are out, their mesh, and the
+  ground grid fireflies follow.
+- `test_plants.scm`: valid plant meshes, the same plants every time, trunks on dry
+  ground inside their chunk, nothing in a full clearing.
+- `test_caves.scm`: see [Caves](#caves).
+
+Shared checks (mesh validity, ranges, test names) are in `tests/helpers.scm`.
+A suite file starts with `(import (scheme base))` before
+`(include "helpers.scm")`; included first, the helpers expand with Hissp's own
+`let` and fail to compile.
 
 ## Live development
 
@@ -304,16 +334,13 @@ Walking follows the same solid field used to build the mesh, putting your
 feet on the cave floor. Walls and ceilings stop you like cliffs do: you
 can't climb a tunnel's side or stand where your head would hit the rock.
 
-Run the cave regression checks (SRFI 64, in Scheme) without opening a window:
-
-```sh
-uv run main.py tests/test_caves.scm
-```
-
-They check eight caves of world seed 4242 for holes, repeated edges, reversed
-faces, and walking through mouths and along the main tunnels. They also
-cover the cliff mouth at site `(0, 4)` and a cave opening exactly on the
-terrain surface, where a thin sheet of rock must not appear. Surface-net
+`tests/test_caves.scm` (part of `tests/run.scm`) checks eight caves of world
+seed 4242 for holes, repeated edges, reversed faces, and walking through
+mouths and along the main tunnels; mouths above the sea, daylight and open sky
+in front of them, dark and shelter at the end of the main tunnel, the plant
+clearing kept, and no cave floor away from caves. It also covers the cliff
+mouth at site `(0, 4)` and a cave opening exactly on the terrain surface,
+where a thin sheet of rock must not appear. Surface-net
 cells keep separate vertices for disconnected surface patches, and mouths
 blend smoothly into the ground; both prevent folded rock at an entrance.
 
