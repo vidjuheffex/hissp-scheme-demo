@@ -26,8 +26,11 @@
           biome-weights
           biome-at
           forest-density
+          woods
+          bilerp
           channel-distance
           cliffiness
+          wall-country?
           RIVER-WIDTH
           chunk-mesh-data
           chunk-grass
@@ -429,6 +432,13 @@
     (define (channel-distance x z)
       (channel-meters (vector-ref (features x z) 0)))
 
+    ;; Could there be a canyon wall or a cliff within `reach` meters of
+    ;; (x, z)? Cheap: no terrain heights, only the feature noises.
+    (define (wall-country? x z reach)
+      (let ((f (features x z)))
+        (or (< (channel-meters (vector-ref f 0)) (+ reach CANYON-FLOOR RIVER-WIDTH))
+            (> (vector-ref f 1) (car CLIFF-REGIONS)))))
+
     (define (cliffiness x z)
       (let ((w (biome-weights x z)))
         (cliff-amount (terrain-height x z) (car w) (vector-ref (features x z) 1))))
@@ -744,8 +754,10 @@
     ;; and for sinking clumps into the ground at the edge of the grass range,
     ;; or out of bloom. x is a wildflower's hue and z its bloom threshold.
     ;; Heights follow the same two triangles per cell as the terrain mesh.
-    (define (chunk-grass ox oz terrain biomes pause)
-      (let ((mesh (list (make-vector (* MAX-CLUMPS 24) 0.0)
+    ;; No clumps where the optional `cleared?` says world (x, z) is kept clear.
+    (define (chunk-grass ox oz terrain biomes pause . options)
+      (let ((cleared? (if (pair? options) (car options) (lambda (x z) #f)))
+            (mesh (list (make-vector (* MAX-CLUMPS 24) 0.0)
                         (make-vector (* MAX-CLUMPS 24) 0.0)
                         (make-vector (* MAX-CLUMPS 16) 0.0)
                         (make-vector (* MAX-CLUMPS 32) 1.0)
@@ -772,7 +784,8 @@
                    (flowery (+ (* FLOWER-CHANCE w-grass open) (* DRY-FLOWER-CHANCE w-dry)))
                    (ferny (* FERN-CHANCE w-grass canopy))
                    (desert-flowery (* DESERT-FLOWER-CHANCE w-desert)))
-              (when (> (+ lush desert-flowery ferny) 0.0)
+              (when (and (> (+ lush desert-flowery ferny) 0.0)
+                         (not (cleared? (+ ox (* fx CELL)) (+ oz (* fz CELL)))))
                 (let* ((u (- fx ci))
                        (v (- fz cj))
                        (a (+ 1 (* 3 (+ ci (* cj VERTS)))))
@@ -888,8 +901,13 @@
     ;; Terrain colors carry the biome weights: red desert, green dry
     ;; grassland, blue snowy (grassland is the rest); alpha is `woods`.
     ;; The optional `pause` thunk is called periodically during generation.
+    ;; The optional `cave` procedure gets the finished height samples (with
+    ;; their border), colors and normals, and returns a mesh to draw in place
+    ;; of the terrain's, or #f; it goes on the end of the list.
     (define (chunk-mesh-data ox oz . options)
       (let* ((pause (if (pair? options) (car options) no-pause))
+             (cave (and (pair? options) (pair? (cdr options)) (cadr options)))
+             (cave-data #f)
              (x0 (- ox CELL))
              (z0 (- oz CELL))
              (heights (make-vector (* SAMPLES SAMPLES) 0.0))
@@ -968,11 +986,13 @@
                              (min 1.0 (* 0.5 (sqrt (+ (* dhx dhx) (* dhz dhz))))))
                 (vector-set! water-colors (+ c 3) 1.0)))
             (pause)))
-        (list vertices
-              normals
-              TRIANGLES
-              (and wet? (list WATER-VERTICES water-colors))
-              colors)))
+        (when cave (set! cave-data (cave heights colors normals)))
+        (let ((data (list vertices
+                          normals
+                          TRIANGLES
+                          (and wet? (list WATER-VERTICES water-colors))
+                          colors)))
+          (if cave (append data (list cave-data)) data))))
 
     ;; Runs on every load, including hot reloads: restores the current seed.
     (set-world-seed! (state-ref 'seed))))

@@ -17,6 +17,7 @@ uniform float shadow_bias;
 uniform float wetness;      // 0 dry to 1 soaked by rain
 uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
+uniform float lantern;   // 0 off to 1 on: the light the player carries in caves
 
 #include "clouds.glsl"
 #include "mist.glsl"
@@ -24,6 +25,7 @@ uniform vec3 to_light;   // world direction toward the shadow light (sun or moon
 uniform mat4 p3d_ViewMatrixInverse;
 
 in vec4 biome;   // r desert, g dry grassland, b snowy (grassland is the rest); a woods
+in vec2 cave;    // x how dark, 0 in daylight to 1 deep in a cave; y how far under the rock
 in vec3 world_pos;
 in vec3 world_normal;
 in vec3 view_pos;
@@ -31,6 +33,9 @@ in vec3 view_normal;
 in vec4 shadow_coord;
 
 out vec4 frag_color;
+
+const vec3 LANTERN_COLOR = vec3(1.0, 0.78, 0.5);
+const float LANTERN_REACH = 12.0;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -116,6 +121,10 @@ void main() {
     vec3 grassland = mix(grass, forest_floor,
                          0.85 * smoothstep(0.25, 0.7, biome.a + patch * 0.5));
     vec3 ground = grassland * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
+    // Under the rock of a cave nothing grows and no snow falls: packed dirt.
+    float shelter = cave.y;
+    vec3 cave_floor = vec3(0.36, 0.30, 0.24) * (0.7 + 0.6 * grain);
+    ground = mix(ground, cave_floor, shelter);
     // Desert rock is warmer, like sandstone.
     rock *= mix(vec3(1.0), vec3(1.18, 0.98, 0.78), w_desert);
     // Cliffs and canyon walls show their layers: bands by height, wandering
@@ -136,7 +145,7 @@ void main() {
     // Wet ground is darker, except under snow: after rain, and always in a
     // band where the water laps the shore.
     float lapped = 1.0 - smoothstep(sea_level + 0.05, sea_level + 0.5 + jitter * 0.2, h);
-    albedo *= 1.0 - 0.35 * max(wetness * (1.0 - w_snowy), lapped);
+    albedo *= 1.0 - 0.35 * max(wetness * (1.0 - w_snowy) * (1.0 - shelter), lapped);
     // Fresh snow brings the snow line down the mountains and fills in the
     // bare patches of the snowy biome, on ground flat enough to hold it.
     float flat_ground = 1.0 - smoothstep(0.35, 0.6, slope);
@@ -144,14 +153,23 @@ void main() {
     albedo = mix(albedo, snow,
                  max(smoothstep(snow_line, snow_line + 3.0, h + jitter * 3.0),
                      snow_cover * biome.b * smoothstep(sea_level, sea_level + 1.0, h))
-                 * flat_ground);
+                 * flat_ground * (1.0 - shelter));
 
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     float ndl = max(dot(normalize(view_normal), L), 0.0);
     vec3 sky_ambient = mix(vec3(0.20, 0.19, 0.17), vec3(0.36, 0.42, 0.52), n.y * 0.5 + 0.5)
                      * ambient_color;
-    vec3 light = sky_ambient
-                 + p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light);
+    // Daylight reaches into a cave from its mouth and fades with depth.
+    float daylight = 1.0 - cave.x;
+    vec3 light = (sky_ambient
+                  + p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light))
+                 * daylight * daylight;
+    // The lantern: warm light from the eye, fading out over its reach.
+    vec3 to_eye = p3d_ViewMatrixInverse[3].xyz - world_pos;
+    float dist = length(to_eye);
+    float facing = max(dot(n, to_eye / max(dist, 1e-4)), 0.0);
+    float reach = 1.0 - smoothstep(1.5, LANTERN_REACH, dist);
+    light += LANTERN_COLOR * lantern * reach * reach * (0.25 + 0.75 * facing) * 1.1;
     vec3 color = albedo * light;
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));

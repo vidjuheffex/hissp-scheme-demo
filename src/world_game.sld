@@ -32,6 +32,9 @@
 ;;   (find-river)                  stand in the nearest river
 ;;   (find-canyon)                 go to the nearest canyon floor
 ;;   (find-cliffs)                 go to the foot of the nearest escarpment
+;;   (find-cave)                   go to the nearest cave's mouth; says small, medium or large
+;;   (visit-cave!)                 go a few meters into the nearest cave
+;;   (cave-size)                   how big the nearest cave is
 ;;   (go-to! 500 -200)             move the player
 ;;   (regenerate!)                 rebuild every chunk, e.g. after terrain edits
 ;;   (reload!)                     force-reload everything
@@ -53,6 +56,7 @@
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
     (world state)
     (world terrain)
+    (world caves)
     (world plants)
     (world weather)
     (world life)
@@ -76,6 +80,7 @@
     (define SKY-DUSK (list 0.95 0.55 0.38))
     (define SKY-NIGHT (list 0.01 0.015 0.04))     ; no moon
     (define SKY-MOONLIT (list 0.05 0.07 0.15))    ; full moon overhead
+    (define CAVE-FOG (list 0.012 0.011 0.010))    ; deep in a cave
     (define SUN-COLOR (list 0.95 0.88 0.75))   ; midday
     (define SUN-WARM (list 1.0 0.6 0.32))      ; near the horizon
     (define AMBIENT-NEW-MOON (list 0.28 0.30 0.45))
@@ -216,13 +221,22 @@
              (oz (* cz CHUNK-SIZE))
              (triangles (list-ref data 2))
              (water (list-ref data 3))
+             ;; A chunk a cave reaches draws the cave's mesh of its ground.
+             (cave (list-ref data 6))
              (terrain (call/kw Entity
                                (parent (state-ref 'world-root)
-                                model (call/kw Mesh
-                                               (vertices (car data)
-                                                normals (cadr data)
-                                                colors (list-ref data 4)
-                                                triangles triangles))
+                                model (if cave
+                                          (call/kw Mesh
+                                                   (vertices (car cave)
+                                                    normals (cadr cave)
+                                                    colors (list-ref cave 2)
+                                                    uvs (list-ref cave 3)
+                                                    triangles (list-ref cave 4)))
+                                          (call/kw Mesh
+                                                   (vertices (car data)
+                                                    normals (cadr data)
+                                                    colors (list-ref data 4)
+                                                    triangles triangles)))
                                 position (make-tuple ox 0 oz)
                                 shader (state-ref 'terrain-shader)))))
         (when water
@@ -238,6 +252,9 @@
             (call-method (attribute-ref surface 'model) 'set-transparency #t)
             ;; Mask 1 is the shadow camera; water shouldn't shade the seabed.
             (call-method surface 'hide 1)))
+        ;; The heightfield's (vertices colors), which grass grows from: a
+        ;; cave chunk's model is the cave mesh.
+        (attribute-set! terrain 'ground (list (car data) (list-ref data 4)))
         (let ((plants (list-ref data 5)))
           ;; Tree trunks, as world (x z radius), for `keep-out-of-trunks!`.
           (attribute-set! terrain 'trunks (if plants (list-ref plants 5) '()))
@@ -281,16 +298,28 @@
         (call-method clumps 'hide 1)
         (attribute-set! clumps 'enabled show?)))
 
-    ;; Terrain data with the chunk's plants appended at index 5.
+    ;; Meters in front of a cave's mouth kept clear of plants and rocks, and
+    ;; of grass clumps.
+    (define PLANT-CLEARING 8.0)
+    (define GRASS-CLEARING 3.0)
+
+    ;; Terrain data with the chunk's plants at index 5 and its caves at 6.
     (define (generate-chunk cx cz pause)
       (let* ((ox (* cx CHUNK-SIZE))
              (oz (* cz CHUNK-SIZE))
-             (data (chunk-mesh-data ox oz pause)))
-        (append data (list (chunk-plants ox oz (car data) (list-ref data 4) pause)))))
+             (data (chunk-mesh-data ox oz pause
+                                    (lambda (heights colors normals)
+                                      (cave-chunk-data ox oz heights colors normals pause)))))
+        (list (car data) (cadr data) (list-ref data 2) (list-ref data 3) (list-ref data 4)
+              (chunk-plants ox oz (car data) (list-ref data 4) pause
+                            (mouth-clearing ox oz PLANT-CLEARING 6.0))
+              (list-ref data 5))))
 
     ;; `sources` is the chunk's terrain (vertices colors).
     (define (generate-grass cx cz sources pause)
-      (chunk-grass (* cx CHUNK-SIZE) (* cz CHUNK-SIZE) (car sources) (cadr sources) pause))
+      (let ((ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE)))
+        (chunk-grass ox oz (car sources) (cadr sources) pause
+                     (mouth-clearing ox oz GRASS-CLEARING 3.5))))
 
     (define (no-pause) #f)
 
@@ -415,16 +444,13 @@
     (define MAX-GRASS-JOBS 2)
 
     (define (request-grass! key terrain)
-      (let ((model (attribute-ref terrain 'model)))
-        (hash-table-set! (state-ref 'grass-jobs) key 'pending)
-        (with-lock
-          (lambda ()
-            (state-set! 'job-queue
-                        (cons (append key (list (state-ref 'generation)
-                                                (list (attribute-ref model 'vertices)
-                                                      (attribute-ref model 'colors))))
-                              (state-ref 'job-queue)))))
-        (condition-variable-signal! work-available)))
+      (hash-table-set! (state-ref 'grass-jobs) key 'pending)
+      (with-lock
+        (lambda ()
+          (state-set! 'job-queue
+                      (cons (append key (list (state-ref 'generation) (attribute-ref terrain 'ground)))
+                            (state-ref 'job-queue)))))
+      (condition-variable-signal! work-available))
 
     (define (pending-grass-jobs)
       (let count ((states (hash-table-values (state-ref 'grass-jobs))) (n 0))
@@ -862,7 +888,9 @@
                                    v))
                                (car sounds)
                                (cadr sounds)
-                               (sound-levels x z (apply max (vector->list heard))))))
+                               (let ((muffle (- 1.0 (* 0.9 (state-ref 'inside)))))
+                                 (map (lambda (level) (* level muffle))
+                                      (sound-levels x z (apply max (vector->list heard))))))))
             (vector-set! heard k (water-heard x z k))
             (state-set! 'sounds
                         (list (car sounds) volumes heard
@@ -1063,6 +1091,11 @@
     (define (current-phase)
       (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
 
+    ;; The fog for a sky of `sky`: in a cave the distance goes dark, though
+    ;; the sky seen out of the mouth stays as it is.
+    (define (fog-for sky)
+      (lerp-list sky CAVE-FOG (smooth-step 0.0 0.6 (state-ref 'inside))))
+
     ;; Light the scene for the current hour and weather. Only does work when
     ;; either has changed since the last call.
     (define (apply-time!)
@@ -1070,7 +1103,8 @@
              (weather (state-ref 'weather))
              (cover (car weather))
              (precipitation (cadr weather))
-             (key (list hours (round (* 200.0 cover)) (round (* 200.0 precipitation)))))
+             (key (list hours (round (* 200.0 cover)) (round (* 200.0 precipitation))
+                        (round (* 50.0 (state-ref 'inside))))))
         (unless (equal? key (state-ref 'applied-time))
           (state-set! 'applied-time key)
           (let* ((scene (scene-at hours (current-phase) cover precipitation))
@@ -1118,7 +1152,7 @@
             (state-set! 'scene-light (list sky (list-ref scene 3) (list-ref scene 10)))
             (state-set! 'flash-shown 0.0)
             (attribute-set! window 'color (rgba sky))
-            (set-input! "fog_color" (rgba sky))
+            (set-input! "fog_color" (rgba (fog-for sky)))
             (set-input! "fog_end" (* FOG-END (- 1.0 (* 0.5 precipitation))))
             (set-input! "to_light" (rgb (scale-list (car scene) -1.0)))
             (set-input! "cover" cover)
@@ -1303,7 +1337,7 @@
           (let ((sky (map + (car light) (scale-list FLASH-SKY flash)))
                 (ambient (rgb (map + (cadr light) (scale-list FLASH-LIGHT flash)))))
             (attribute-set! window 'color (rgba sky))
-            (set-input! "fog_color" (rgba sky))
+            (set-input! "fog_color" (rgba (fog-for sky)))
             (set-input! "ambient_color" ambient)
             (when domes
               (call-method (car domes) 'set-shader-input "sky_color" (rgb sky))
@@ -1368,7 +1402,7 @@
         (when sky
           (call-method (cadr sky) 'set-shader-input "drift" (apply make-tuple drift))
           (let ((precipitation (list-ref sky 2))
-                (amount (cadr now-weather)))
+                (amount (* (cadr now-weather) (- 1.0 (state-ref 'sheltered)))))
             (attribute-set! precipitation 'enabled (> amount 0.01))
             (call-method precipitation 'set-shader-input "intensity" amount)
             (call-method precipitation 'set-shader-input "snow" (list-ref now-weather 2))
@@ -1402,8 +1436,9 @@
                       (list (list "wind_dir" (apply make-tuple dir))
                             (list "air_drift" (apply make-tuple drift))
                             (list "wind_speed" wind)
-                            (list "amount" (+ (* 0.25 (smooth-step 0.3 1.0 wind))
-                                              (* 0.75 (smooth-step 1.6 2.4 wind))))))))))
+                            (list "amount" (* (- 1.0 (state-ref 'sheltered))
+                                              (+ (* 0.25 (smooth-step 0.3 1.0 wind))
+                                                 (* 0.75 (smooth-step 1.6 2.4 wind)))))))))))
 
     ;; Meters a second the wind pushes rain and snow sideways, per unit of
     ;; wind (about 1 a breeze, 2.5 a storm). Snow is light and blows far
@@ -1571,6 +1606,39 @@
                           (> (channel-distance x z) 40.0)
                           (> (highest-around x z 4.0) (+ (terrain-height x z) 5.0))))))
 
+    ;; `(find-cave)`: go to just outside the nearest cave's mouth, facing in,
+    ;; and say how big the cave is (small, medium or large). Slow the first
+    ;; time in a new area: it searches every cave site out to about 1 km.
+    (define (find-cave)
+      (visit-cave-at! -5.0))
+
+    ;; `(visit-cave!)`: the same, but a few meters inside.
+    (define (visit-cave!)
+      (visit-cave-at! 7.0))
+
+    (define (visit-cave-at! along)
+      (let* ((here (player-xz))
+             (found (find-cave-site (car here) (cadr here) 6)))
+        (and found
+             (let* ((m (car found))
+                    (dx (vector-ref m 3))
+                    (dz (vector-ref m 4))
+                    (x (+ (vector-ref m 0) (* along dx)))
+                    (z (+ (vector-ref m 2) (* along dz)))
+                    (player (state-ref 'player)))
+               (caves-ready-near! x z)
+               (go-to! x z)
+               (when (> along 0.0)
+                 (attribute-set! player 'y (or (cave-ground x z (+ (vector-ref m 1) 0.5) (terrain-height x z))
+                                               (vector-ref m 1))))
+               (attribute-set! player 'rotation_y (* (atan dx dz) (/ 180.0 PI)))
+               (cadr found)))))
+
+    ;; `(cave-size)`: how big the nearest cave is: small, medium or large.
+    (define (cave-size)
+      (let ((here (player-xz)))
+        (cave-size-near (car here) (cadr here))))
+
     ;; --- per-frame update and input --------------------------------------
 
     (define PLAYER-RADIUS 0.35)
@@ -1592,7 +1660,10 @@
                                (oz (- (attribute-ref player 'z) (cadr trunk)))
                                (reach (+ PLAYER-RADIUS (list-ref trunk 2)))
                                (d (sqrt (+ (* ox ox) (* oz oz)))))
-                          (when (and (< d reach) (> d 1e-6))
+                          (when (and (< d reach) (> d 1e-6)
+                                     ;; Not trees overhead in a cave.
+                                     (> (attribute-ref player 'y)
+                                        (- (terrain-height (car trunk) (cadr trunk)) 2.0)))
                             (attribute-set! player 'x (+ (car trunk) (* ox (/ reach d))))
                             (attribute-set! player 'z (+ (cadr trunk) (* oz (/ reach d)))))))
                       (attribute-ref terrain 'trunks)))))
@@ -1693,8 +1764,15 @@
                              SURFACES)
                         0.0 #f)))
 
+    ;; The ground under feet at height `feet` in (x, z): a cave's floor
+    ;; where a cave opens there, else the terrain.
+    (define (ground-under x z feet)
+      (let ((h (terrain-height x z)))
+        (or (cave-ground x z feet h) h)))
+
     ;; Undoes the controller's last move where the ground ahead rises steeper
-    ;; than `MAX-CLIMB` above the player's feet, sliding along the foot of
+    ;; than `MAX-CLIMB` above the player's feet, or a cave's roof comes too
+    ;; low to stand under, sliding along the foot of
     ;; the slope if moving along just one axis would do. Returns how far the
     ;; player stepped, or #f after a jump (`go-to!`) or on the first frame.
     (define (keep-off-cliffs! player)
@@ -1705,7 +1783,10 @@
              (step (lambda (x z)
                      (sqrt (+ (square (- x (car last))) (square (- z (cadr last)))))))
              (too-steep? (lambda (x z)
-                           (> (terrain-height x z) (+ feet 0.01 (* MAX-CLIMB (step x z))))))
+                           (let* ((h (terrain-height x z))
+                                  (ground (or (cave-ground x z feet h) h)))
+                             (or (> ground (+ feet 0.01 (* MAX-CLIMB (step x z))))
+                                 (not (cave-headroom? x z ground h))))))
              (moved (and last (< (step x z) 5.0))))
         (when (and moved (too-steep? x z))
           (let ((lx (car last)) (lz (cadr last)))
@@ -1739,13 +1820,14 @@
     ;; water deeper than `WADE-DEPTH`, sliding along the shore if moving
     ;; along just one axis would do. Deeper is allowed only when it's no
     ;; deeper than where the player already was, so being put out in deep
-    ;; water (`go-to!`) doesn't trap them. Returns the terrain height under
-    ;; the player.
+    ;; water (`go-to!`) doesn't trap them. Returns the ground height under
+    ;; the player (a cave's floor in a cave).
     (define (keep-out-of-deep-water! player)
       (let* ((last (state-ref 'last-ground))
              (x (attribute-ref player 'x))
              (z (attribute-ref player 'z))
-             (depth (lambda (x z) (- SEA-LEVEL (terrain-height x z))))
+             (feet (attribute-ref player 'y))
+             (depth (lambda (x z) (- SEA-LEVEL (ground-under x z feet))))
              (d (depth x z))
              (allowed (lambda (d) (or (not last) (<= d WADE-DEPTH) (<= d (list-ref last 2))))))
         (unless (allowed d)
@@ -1772,7 +1854,8 @@
              (gx (- (terrain-height (+ x 0.7) z) h))
              (gz (- (terrain-height x (+ z 0.7)) h))
              (slope (- 1.0 (/ 0.7 (sqrt (+ 0.49 (* gx gx) (* gz gz)))))))
-        (cond ((< h (+ SEA-LEVEL 0.05)) "water")
+        (cond ((< h (- (terrain-height x z) 1.0)) "rock")   ; in a cave
+              ((< h (+ SEA-LEVEL 0.05)) "water")
               ((and (< slope 0.5)
                     (or (> snowy 0.5)
                         (> h (- 37.0 (* 15.0 snow-cover)))
@@ -1809,6 +1892,23 @@
                 (call-method audio 'play)))
             (state-set! 'footsteps (list (car steps) phase (list x z)))))))
 
+    ;; How far into a cave the player's eyes are, and how sheltered, eased so
+    ;; stepping in and out doesn't snap; brings the lantern up as daylight
+    ;; fades.
+    (define (update-cave! player dt)
+      (let* ((x (attribute-ref player 'x))
+             (z (attribute-ref player 'z))
+             (eye (+ (attribute-ref player 'y) EYE-HEIGHT))
+             (ground (terrain-height x z))
+             (target (cave-depth x eye z ground))
+             (inside (state-ref 'inside))
+             (now (+ inside (* (- target inside) (- 1.0 (exp (* -3.0 dt))))))
+             (sheltered (state-ref 'sheltered))
+             (cover (+ sheltered (* (- (cave-shelter x eye z ground) sheltered) (- 1.0 (exp (* -6.0 dt)))))))
+        (state-set! 'inside (if (< now 0.001) 0.0 now))
+        (state-set! 'sheltered (if (< cover 0.001) 0.0 cover))
+        (set-input! "lantern" (smooth-step 0.0 0.12 now))))
+
     (define (world-update)
       (keep-out-of-trunks! (state-ref 'player))
       (let* ((player (state-ref 'player))
@@ -1821,6 +1921,7 @@
         (dev-drain!)
         (dev-poll!)
         (let ((dt (advance-time!)))
+          (update-cave! player dt)
           (update-weather! x z dt)
           (apply-time!)
           (update-life! x z)
@@ -1863,7 +1964,8 @@
               (list "shadow_bias" SHADOW-BIAS)
               (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))
               (list "mist_base" SEA-LEVEL)
-              (list "mist" (state-ref 'mist))))
+              (list "mist" (state-ref 'mist))
+              (list "lantern" 0.0)))
       (let ((sky (state-ref 'sky)))
         (when sky
           (call-method (car sky) 'set-shader-input "mist_base" SEA-LEVEL)
@@ -1949,8 +2051,8 @@
             "shaders/life.vert" "shaders/life.frag"
             "shaders/wind.vert" "shaders/wind.frag"))
     (define WATCHED-FILES
-      (append (list "world_terrain.sld" "world_plants.sld" "world_weather.sld" "world_life.sld"
-                  "world_game.sld")
+      (append (list "world_terrain.sld" "world_caves.sld" "world_plants.sld" "world_weather.sld"
+                    "world_life.sld" "world_game.sld")
               SHADER-FILES))
 
     (define (file-mtime name)
@@ -1990,13 +2092,15 @@
     ;; replaces these very functions, so the calls below go to the new code.
     (define (reload-changed! changed)
       (let* ((terrain? (member "world_terrain.sld" changed))
-             (plants? (or terrain? (member "world_plants.sld" changed)))
+             (caves? (or terrain? (member "world_caves.sld" changed)))
+             (plants? (or caves? (member "world_plants.sld" changed)))
              (weather? (or terrain? (member "world_weather.sld" changed)))
              (life? (or terrain? (member "world_life.sld" changed)))
              (scene? (member "world_game.sld" changed))
              (shaders? (any-member? SHADER-FILES changed)))
         (when (or plants? weather? life? scene?)
           (when terrain? (reload-library! "world_terrain.sld"))
+          (when caves? (reload-library! "world_caves.sld"))
           (when plants? (reload-library! "world_plants.sld"))
           (when weather? (reload-library! "world_weather.sld"))
           (when life? (reload-library! "world_life.sld"))

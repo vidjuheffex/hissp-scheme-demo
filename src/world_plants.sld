@@ -944,9 +944,11 @@
     ;; vertices and biome colors `chunk-mesh-data` made for it. Returns
     ;; (vertices normals colors triangles uvs trunks), or #f if nothing
     ;; grows, where `trunks` lists the world (x z radius) of each tree and
-    ;; boulder the player can't walk through.
-    (define (chunk-plants ox oz terrain biomes pause)
-      (let* ((seed (seed-offset))
+    ;; boulder the player can't walk through. Nothing grows where the
+    ;; optional `cleared?` says world (x, z) is kept clear.
+    (define (chunk-plants ox oz terrain biomes pause . options)
+      (let* ((cleared? (if (pair? options) (car options) (lambda (x z) #f)))
+             (seed (seed-offset))
              (parts '())
              (trunks '())
              (base 0))
@@ -985,9 +987,10 @@
                        (fx (/ (* spacing (+ i (rand 1))) CELL))
                        (fz (/ (* spacing (+ j (rand 2))) CELL))
                        (c (* 4 (+ (exact (floor fx)) (* (exact (floor fz)) VERTS)))))
-                  (grow rand (* fx CELL) (* fz CELL) (ground terrain fx fz)
-                        (vector-ref biomes c) (vector-ref biomes (+ c 1))
-                        (vector-ref biomes (+ c 2)) (vector-ref biomes (+ c 3)))))
+                  (unless (cleared? (+ ox (* fx CELL)) (+ oz (* fz CELL)))
+                    (grow rand (* fx CELL) (* fz CELL) (ground terrain fx fz)
+                          (vector-ref biomes c) (vector-ref biomes (+ c 1))
+                          (vector-ref biomes (+ c 2)) (vector-ref biomes (+ c 3))))))
               (pause))))
         (define (noise-at lx lz frequency)
           (value-noise (* (+ ox lx (car seed)) frequency)

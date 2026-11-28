@@ -11,6 +11,7 @@ uv run main.py 1234   # revisit a world by seed
 Controls: WASD to walk (Shift to sprint), mouse to look, Escape to toggle
 mouse lock. You can wade into water up to about thigh deep, slowing as it gets deeper, but no deeper.
 You can't walk up cliffs or canyon walls, but you can walk off them, and fall.
+Caves open in canyon walls and escarpments; walk in and a lantern lights the way.
 Your position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`
@@ -25,13 +26,14 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/main.scm` — entrypoint
 - `src/world_state.sld` — `(world state)`: state that survives reloads (never reloaded)
 - `src/world_terrain.sld` — `(world terrain)`: noise, biomes, rivers, canyons and cliffs, forests, heights, chunk mesh data
+- `src/world_caves.sld` — `(world caves)`: cave layouts, the combined terrain and cave mesh, cave floors and headroom
 - `src/world_plants.sld` — `(world plants)`: cactus, ocotillo, agave, tree, undergrowth and rock meshes
 - `src/world_weather.sld` — `(world weather)`: cloud cover, rain and snow, wind, wind lines
 - `src/world_life.sld` — `(world life)`: fireflies, bats and birds
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, forest floor, rock and its strata, beaches, snow,
-  wet ground), water (sky and cloud reflections, noise chop, surf foam, soft
+  wet ground, cave darkness and lantern light), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
   (phase shading), the sky and clouds, rain and snow, wildlife, wind lines, and the
@@ -52,9 +54,9 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 
 While the game runs, save a file and it reloads within about half a second:
 
-- `src/world_terrain.sld`, `src/world_plants.sld`, `src/world_weather.sld`,
+- `src/world_terrain.sld`, `src/world_caves.sld`, `src/world_plants.sld`, `src/world_weather.sld`,
   `src/world_life.sld`, `src/world_game.sld`: the
-  libraries are re-evaluated in place. Terrain and plant edits also regenerate
+  libraries are re-evaluated in place. Terrain, cave and plant edits also regenerate
   the chunks.
 - `src/shaders/*`: shaders are recompiled and applied to the existing terrain.
 
@@ -79,6 +81,9 @@ Type Scheme into the terminal that started the game, one form per line:
 (find-river)               ; stand in the nearest river
 (find-canyon)              ; go to the nearest canyon floor
 (find-cliffs)              ; go to the foot of the nearest escarpment
+(find-cave)                ; go to the nearest cave's mouth; says small, medium or large
+(visit-cave!)              ; go a few meters into the nearest cave
+(cave-size)                ; how big the nearest cave is
 (go-to! 500 -200)          ; move the player
 (regenerate!)              ; rebuild every chunk
 (reload!)                  ; force-reload everything
@@ -253,6 +258,64 @@ The slow channel and cliff noises are sampled on an 8 m lattice
 (`FEATURE-STEP`) and blended, the same way for chunks and for
 `terrain-height`, so the ground you walk on matches the mesh, and chunks
 build no slower than before.
+
+## Caves
+
+Caves open where a canyon wall or an escarpment rises sheer from the
+ground. The world is split into 160 m sites (`SITE` in
+`src/world_caves.sld`); each looks along a few rays for a wall rising 6 m
+within two meters (`WALL-RISE`), and most that find one get a cave
+(`SITE-CHANCE`). Each cave is one of three sizes, picked at random:
+
+- **Small**: a short burrow of two or three bends ending in a small chamber.
+- **Medium**: a longer tunnel with up to three chambers and maybe a side
+  passage.
+- **Large**: a long winding tunnel, several chambers, side passages, and a
+  passage that reaches for the nearest other cave, which becomes a second way out.
+
+Tunnels wind like an ant colony's: they wander left and right, climb and
+drop (up to `SLOPE` per meter) on mostly flat floors (`FLOOR-DROP`), and
+pass over and under one another.
+Where one would run into another it meets it at the same floor, so every
+junction can be walked. They keep `ROOF` meters of rock overhead, thinning
+out toward a mouth, and stay above the sea. Chambers have flatter floors.
+Stalactites, stalagmites and extra cliff-face detail are deferred while the
+cave geometry is refined.
+
+A cave is a distance field: tubes and chambers blended smoothly and roughened
+by 3D noise (`ROUGH`). In chunks a cave reaches, surface nets on a 1 m grid
+build one continuous surface for the ground, the opening and the cave inside.
+This mesh replaces the chunk's heightfield mesh and uses the same terrain
+shader. Ground away from the cave keeps the heightfield's vertices so it
+meets neighbouring chunks. The original heightfield is kept for placing
+plants and grass above ground.
+
+Nothing grows in front of a mouth: no trees, plants or rocks within
+`PLANT-CLEARING` meters and no grass clumps within `GRASS-CLEARING`
+(`src/world_game.sld`). The work runs on the chunk worker like the rest of the terrain, so a
+cave chunk only takes a little longer to appear.
+
+Daylight reaches about 2 m in from a mouth and is gone by 20 m (`DARK`).
+Inside, you carry a lantern, warm light out to about 12 m
+(`LANTERN_COLOR`, `LANTERN_REACH` in `src/shaders/terrain.frag`). The fog closes in dark,
+rain and snow stop, outside sounds fade, and footsteps sound on rock.
+
+Walking follows the same solid field used to build the mesh, putting your
+feet on the cave floor. Walls and ceilings stop you like cliffs do: you
+can't climb a tunnel's side or stand where your head would hit the rock.
+
+Run the cave regression checks without opening a window:
+
+```sh
+uv run python -m unittest discover -s tests -v
+```
+
+They check the seed-4242 handoff caves for holes, repeated edges, reversed
+faces, and walking through mouths and along the main tunnels. They also
+cover the cliff mouth at site `(0, 4)` and a cave opening exactly on the
+terrain surface, where a thin sheet of rock must not appear. Surface-net
+cells keep separate vertices for disconnected surface patches, and mouths
+blend smoothly into the ground; both prevent folded rock at an entrance.
 
 ## Forests
 
