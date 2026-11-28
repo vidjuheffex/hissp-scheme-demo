@@ -18,6 +18,7 @@ uniform float wetness;      // 0 dry to 1 soaked by rain
 uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
 uniform float lantern;   // 0 off to 1 on: the light the player carries in caves
+uniform float osg_FrameTime;
 
 #include "clouds.glsl"
 #include "mist.glsl"
@@ -126,7 +127,7 @@ void main() {
                          0.85 * smoothstep(0.25, 0.7, biome.a + patch * 0.5));
     vec3 ground = grassland * w_grass + dry_grass * w_dry + desert_sand * w_desert + snow * w_snowy;
     // Under the rock of a cave nothing grows and no snow falls: packed dirt.
-    float shelter = cave.y;
+    float shelter = min(cave.y, 1.0);
     vec3 cave_floor = vec3(0.36, 0.30, 0.24) * (0.7 + 0.6 * grain);
     ground = mix(ground, cave_floor, shelter);
     // Desert rock is warmer, like sandstone.
@@ -138,18 +139,32 @@ void main() {
     vec3 strata = mix(vec3(0.82, 0.79, 0.76), vec3(1.1, 1.06, 1.0), band * 0.5 + 0.5);
     vec3 red_strata = mix(vec3(0.98, 0.62, 0.44), vec3(1.18, 0.98, 0.74), smoothstep(-0.3, 0.3, band));
     strata = mix(strata, red_strata, max(w_desert, w_dry * 0.6));
+    // Vertical joints interrupt the bedding. Project along the wall so
+    // their width holds up when seen from below or around a bend.
+    float along = dot(world_pos.xz, vec2(0.79, 0.61));
+    float joint_phase = along * 0.24 + h * 0.023;
+    float joint_pixel = fwidth(joint_phase);
+    if (exposure > 0.1 && cave.y < 0.5) {
+        float fold = cloud_noise(vec2(along * 0.32, h * 0.21));
+        float joint = abs(fract(joint_phase + fold * 0.43) - 0.5);
+        float groove = (1.0 - smoothstep(0.008, 0.034 + min(0.05, joint_pixel), joint))
+                     * smoothstep(0.32, 0.65, fold) * (1.0 - smoothstep(0.04, 0.16, joint_pixel));
+        strata *= 1.0 + exposure * (0.18 * (fold - 0.5) - 0.29 * groove);
+    }
 
     float jitter = macro * 2.5;
     vec3 albedo = ground;
     // Bare rock band on high ground, except where snow covers it.
     albedo = mix(albedo, rock, smoothstep(26.0, 34.0, h + jitter * 2.0) * (1.0 - w_snowy));
     albedo = mix(albedo, rock * strata, smoothstep(0.28, 0.45, slope));
-    albedo = mix(albedo, sand, (1.0 - exposure) * (1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h)));
-    albedo = mix(albedo, seabed, (1.0 - exposure) * (1.0 - smoothstep(sea_level - 1.5, sea_level, h)));
-    // Wet ground is darker, except under snow: after rain, and always in a
-    // band where the water laps the shore.
+    float sediment = 1.0 - smoothstep(0.24, 0.62, slope);
+    albedo = mix(albedo, sand, sediment * (1.0 - smoothstep(sea_level + 0.4, sea_level + 1.8 + jitter * 0.3, h)));
+    albedo = mix(albedo, seabed, sediment * (1.0 - smoothstep(sea_level - 1.5, sea_level, h)));
+    // Rain, surf and cave pools darken ground with the same wetness response.
     float lapped = 1.0 - smoothstep(sea_level + 0.05, sea_level + 0.5 + jitter * 0.2, h);
-    albedo *= 1.0 - 0.35 * max(wetness * (1.0 - w_snowy) * (1.0 - shelter), lapped);
+    float pool_damp = cave.y < 2.0 ? clamp((cave.y - 1.0) / 0.75, 0.0, 1.0) : 0.0;
+    float ground_wet = max(pool_damp, max(wetness * (1.0 - w_snowy) * (1.0 - shelter), lapped));
+    albedo *= 1.0 - 0.35 * ground_wet;
     // Fresh snow brings the snow line down the mountains and fills in the
     // bare patches of the snowy biome, on ground flat enough to hold it.
     float flat_ground = 1.0 - smoothstep(0.35, 0.6, slope);
@@ -159,6 +174,22 @@ void main() {
                      snow_cover * biome.b * smoothstep(sea_level, sea_level + 1.0, h))
                  * flat_ground * (1.0 - shelter));
 
+    // Dripstone inherits the local rock grain underneath thin mineral layers.
+    if (cave.y >= 2.0) {
+        float stain = clamp(cave.y - 2.0, 0.0, 1.0);
+        vec3 mineral = mix(vec3(0.64, 0.55, 0.43), vec3(0.83, 0.77, 0.65), stain);
+        float film = sin(h * 14.0 + luma(rock) * 7.0);
+        albedo = mix(rock, mineral, 0.52) * (0.91 + 0.07 * film);
+    }
+    float drip_ring = 0.0;
+    if (cave.y >= 4.0) {
+        float radius = cave.y - 4.0;
+        float travel = fract(osg_FrameTime * 0.46) * 1.6 - radius;
+        drip_ring = exp(-24.0 * abs(travel)) * (1.0 - radius);
+        float shallows = smoothstep(0.38, 0.84, radius + 0.13 * (grain - 0.5));
+        albedo = mix(vec3(0.12, 0.24, 0.25), cave_floor * 0.83, shallows)
+               + vec3(0.13, 0.20, 0.18) * drip_ring;
+    }
     vec3 L = normalize(p3d_LightSource[0].position.xyz);
     float ndl = max(dot(normalize(view_normal), L), 0.0);
     vec3 sky_ambient = mix(vec3(0.20, 0.19, 0.17), vec3(0.36, 0.42, 0.52), n.y * 0.5 + 0.5)
@@ -175,6 +206,9 @@ void main() {
     float reach = 1.0 - smoothstep(1.5, LANTERN_REACH, dist);
     light += LANTERN_COLOR * lantern * reach * reach * (0.25 + 0.75 * facing) * 1.1;
     vec3 color = albedo * light;
+    if (cave.y >= 4.0)
+        color += reach * lantern * (vec3(0.18, 0.23, 0.25) * pow(1.0 - facing, 2.0)
+               + vec3(0.54, 0.46, 0.33) * (0.40 * drip_ring + 0.18 * pow(facing, 12.0)));
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));
     color = mix(color, fog_color.rgb, fog);

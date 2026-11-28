@@ -417,7 +417,7 @@
                              (let* ((s (- dist RIVER-WIDTH))
                                     (flat (* canyon CANYON-FLOOR))
                                     (slope (lerp BANK-SLOPE CANYON-WALL canyon))
-                                    (width (* 7.0 dry (ramp-between 12.0 18.0 (- h edge))
+                                    (width (* 7.0 (ramp-between 12.0 18.0 (- h edge))
                                               (ramp-between 0.26 0.76 sandstone)))
                                     (rise (- s flat)))
                                (if (<= rise 0.0)

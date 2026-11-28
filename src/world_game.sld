@@ -40,7 +40,7 @@
 ;;   (reload!)                     force-reload everything
 
 (define-library (world game)
-  (export run setup!)
+  (export run setup! cave-outdoor-gain)
   (import (scheme base)
     (scheme inexact)
     (scheme python)
@@ -51,6 +51,7 @@
     (srfi 177)
     (only sys argv)
     (only readline read-history-file write-history-file set-history-length)
+    (only builtins getattr)
     (only random randrange random)
     (only array array)
     (only hissp_scheme.reader SchemeLissp transpile-scheme-file)
@@ -257,7 +258,8 @@
         (attribute-set! terrain 'ground (list (car data) (list-ref data 4)))
         (let ((plants (list-ref data 5)))
           ;; Tree trunks, as world (x z radius), for `keep-out-of-trunks!`.
-          (attribute-set! terrain 'trunks (if plants (list-ref plants 5) '()))
+          (attribute-set! terrain 'trunks
+            (append (if cave (list-ref cave 5) '()) (if plants (list-ref plants 5) '())))
           (when plants
             (let ((mesh (call/kw Mesh
                                  (vertices (car plants)
@@ -847,6 +849,25 @@
     ;; once every `OWL-EVERY` seconds deep in the forest, never by day.
     (define OWL-EVERY 180.0)
 
+    (define (cave-outdoor-gain inside sheltered)
+      (- 1.0 (smooth-step 0.0 0.69 (+ inside (* 0.30 sheltered)))))
+
+    (define (outdoor-gain)
+      (cave-outdoor-gain (state-ref 'inside) (state-ref 'sheltered)))
+
+    ;; Apply the changing cave mix to sounds started before the player
+    ;; entered the cave, as well as to calls that start near the mouth.
+    (define (outdoor-voice! audio gain)
+      (when (= (attribute-ref audio 'playing) 1)
+        (attribute-set! audio 'volume (* gain (getattr audio "outdoor_volume" 0.0)))))
+
+    (define (play-outdoor! audio volume pitch gain)
+      (when (> gain 0.0)
+        (attribute-set! audio 'outdoor_volume volume)
+        (attribute-set! audio 'volume (* gain volume))
+        (attribute-set! audio 'pitch pitch)
+        (call-method audio 'play)))
+
     (define (make-owls!)
       (state-set! 'owls
                   (map (lambda (k)
@@ -860,19 +881,20 @@
 
     (define (update-owls! x z dt)
       (let* ((owls (state-ref 'owls))
+             (gain (outdoor-gain))
              (weather (state-ref 'weather))
              (height (sin (sun-angle (state-ref 'time-of-day))))
              (likely (* (- 1.0 (smooth-step -0.2 -0.05 height))
                         (- 1.0 (smooth-step 0.05 0.3 (cadr weather)))
                         (- 1.0 (smooth-step 0.8 1.5 (state-ref 'wind)))
                         (smooth-step 0.1 0.55 (forest-here x z)))))
-        (when (and owls
-                   (not (any (lambda (audio) (= (attribute-ref audio 'playing) 1)) owls))
-                   (< (random) (/ (* dt likely) OWL-EVERY)))
-          (let ((audio (list-ref owls (randrange 2))))
-            (attribute-set! audio 'volume (+ 0.35 (* 0.2 (random))))
-            (attribute-set! audio 'pitch (+ 0.95 (* 0.1 (random))))
-            (call-method audio 'play)))))
+        (when owls
+          (for-each (lambda (audio) (outdoor-voice! audio gain)) owls)
+          (when (and (> gain 0.0)
+                     (not (any (lambda (audio) (= (attribute-ref audio 'playing) 1)) owls))
+                     (< (random) (/ (* dt likely) OWL-EVERY)))
+            (play-outdoor! (list-ref owls (randrange 2))
+                           (+ 0.35 (* 0.2 (random))) (+ 0.95 (* 0.1 (random))) gain)))))
 
     ;; Listens for water at one more ring point, and fades every loop
     ;; toward its level over `dt` seconds.
@@ -881,16 +903,15 @@
         (when sounds
           (let* ((heard (list-ref sounds 2))
                  (k (list-ref sounds 3))
+                 (gain (outdoor-gain))
                  (fade (- 1.0 (exp (/ (* -3.0 dt) SOUND-FADE))))
                  (volumes (map (lambda (audio volume target)
                                  (let ((v (+ volume (* (- target volume) fade))))
-                                   (attribute-set! audio 'volume v)
+                                   (attribute-set! audio 'volume (* v gain))
                                    v))
                                (car sounds)
                                (cadr sounds)
-                               (let ((muffle (- 1.0 (* 0.9 (state-ref 'inside)))))
-                                 (map (lambda (level) (* level muffle))
-                                      (sound-levels x z (apply max (vector->list heard))))))))
+                               (sound-levels x z (apply max (vector->list heard))))))
             (vector-set! heard k (water-heard x z k))
             (state-set! 'sounds
                         (list (car sounds) volumes heard
@@ -898,7 +919,8 @@
 
     ;; REPL: `(sounds)` => volumes of (wind rain birds crickets water woods river), 0 to 1.
     (define (sounds)
-      (map (lambda (v) (/ (round (* 100.0 v)) 100.0)) (cadr (state-ref 'sounds))))
+      (let ((gain (outdoor-gain)))
+        (map (lambda (v) (/ (round (* 100.0 v gain)) 100.0)) (cadr (state-ref 'sounds)))))
 
     ;; How fast the camera is moving (x y z), smoothed over a few frames,
     ;; from where it was last frame; jumps (teleports, reloads) count as
@@ -1316,13 +1338,13 @@
              (storm (state-ref 'storm))
              (pulses (filter (lambda (p) (< t (+ (car p) (cadr p)))) (car storm)))
              (due (filter (lambda (th) (>= t (car th))) (cadr storm)))
-             (thunder (state-ref 'thunder)))
+             (thunder (state-ref 'thunder))
+             (gain (outdoor-gain)))
         (when thunder
+          (for-each (lambda (audio) (outdoor-voice! audio gain)) thunder)
           (for-each (lambda (th)
-                      (let ((audio (list-ref thunder (cadr th))))
-                        (attribute-set! audio 'volume (list-ref th 2))
-                        (attribute-set! audio 'pitch (+ 0.9 (* 0.2 (random))))
-                        (call-method audio 'play)))
+                      (play-outdoor! (list-ref thunder (cadr th)) (list-ref th 2)
+                                     (+ 0.9 (* 0.2 (random))) gain))
                     due))
         (state-set! 'storm (list pulses (filter (lambda (th) (< t (car th))) (cadr storm))))
         (show-flash! (flash-at pulses t))))
@@ -1661,9 +1683,11 @@
                                (reach (+ PLAYER-RADIUS (list-ref trunk 2)))
                                (d (sqrt (+ (* ox ox) (* oz oz)))))
                           (when (and (< d reach) (> d 1e-6)
-                                     ;; Not trees overhead in a cave.
-                                     (> (attribute-ref player 'y)
-                                        (- (terrain-height (car trunk) (cadr trunk)) 2.0)))
+                                     (let ((feet (attribute-ref player 'y)))
+                                       (if (pair? (list-tail trunk 3))
+                                           (and (< feet (list-ref trunk 4))
+                                                (> (+ feet EYE-HEIGHT) (list-ref trunk 3)))
+                                           (> feet (- (terrain-height (car trunk) (cadr trunk)) 2.0)))))
                             (attribute-set! player 'x (+ (car trunk) (* ox (/ reach d))))
                             (attribute-set! player 'z (+ (cadr trunk) (* oz (/ reach d)))))))
                       (attribute-ref terrain 'trunks)))))
@@ -1747,22 +1771,58 @@
     (define STEP-VARIANTS 4)
 
     ;; One sound per variant of each surface's step, from assets/sounds/steps.
+    (define (load-footsteps surfaces)
+      (map (lambda (surface)
+             (map (lambda (k)
+                    (call/kw Audio
+                      (sound_file_name (Path (asset-path "assets" "sounds" "steps"
+                        (string-append surface "-" (number->string k) ".ogg")))
+                       autoplay #f auto_destroy #f group "sfx")))
+                  (list 1 2 3 4)))
+           surfaces))
+
     (define (make-footsteps!)
-      (state-set! 'footsteps
-                  (list (map (lambda (surface)
-                               (map (lambda (k)
-                                      (call/kw Audio
-                                               (sound_file_name
-                                                 (Path (asset-path "assets" "sounds" "steps"
-                                                                   (string-append surface "-"
-                                                                                  (number->string k)
-                                                                                  ".ogg")))
-                                                autoplay #f
-                                                auto_destroy #f
-                                                group "sfx")))
-                                    (list 1 2 3 4)))
-                             SURFACES)
-                        0.0 #f)))
+      (state-set! 'footsteps (list (load-footsteps SURFACES) 0.0 #f)))
+
+    (define (cave-audio)
+      (or (hash-table-ref/default state 'cave-audio #f)
+          (let ((audio (vector
+                         (load-footsteps (list "cave-rock" "cave-water"))
+                         (map (lambda (k)
+                                (call/kw Audio
+                                  (sound_file_name (Path (asset-path "assets" "sounds" "cave"
+                                    (string-append "drip-" k ".ogg")))
+                                   autoplay #f auto_destroy #f group "ambient")))
+                              (list "1" "2" "3"))
+                         2.5 0.0)))
+            (state-set! 'cave-audio audio)
+            audio)))
+
+    ;; Sparse single drops, with more frequent and clearer reflections
+    ;; near a pool on the player's level.
+    (define (update-cave-audio! player x z dt)
+      (let ((presence (* (state-ref 'sheltered) (- 1.0 (outdoor-gain)))))
+        (when (or (> presence 0.15) (hash-table-ref/default state 'cave-audio #f))
+          (let* ((scene (cave-audio))
+                 (drops (vector-ref scene 1))
+                 (remaining (- (vector-ref scene 2) dt)))
+            (for-each (lambda (drop)
+                        (when (= (attribute-ref drop 'playing) 1)
+                          (attribute-set! drop 'volume (* presence (vector-ref scene 3)))))
+                      drops)
+            (if (< presence 0.15)
+                (vector-set! scene 2 2.5)
+                (if (> remaining 0.0)
+                    (vector-set! scene 2 remaining)
+                    (let* ((distance (cave-pool-distance x (attribute-ref player 'y) z))
+                           (near (- 1.0 (smooth-step 1.5 12.0 distance)))
+                           (drop (list-ref drops (randrange 3)))
+                           (volume (+ 0.10 (* 0.19 near) (* 0.05 (random)))))
+                      (vector-set! scene 2 (+ 3.8 (* 4.0 (- 1.0 near)) (* 6.0 (random))))
+                      (vector-set! scene 3 volume)
+                      (attribute-set! drop 'volume (* presence volume))
+                      (attribute-set! drop 'pitch (+ 0.88 (* 0.24 (random))))
+                      (call-method drop 'play))))))))
 
     ;; The ground under feet at height `feet` in (x, z): a cave's floor
     ;; where a cave opens there, else the terrain.
@@ -1869,7 +1929,8 @@
     ;; come quicker the faster the player goes, and land harder. Splashes
     ;; get louder and deeper the deeper the player wades.
     (define (update-walking! player x z h dt)
-      (define wading (clamp01 (/ (- SEA-LEVEL h) WADE-DEPTH)))
+      (define pool (if (> (state-ref 'sheltered) 0.4) (cave-pool-depth x h z) 0.0))
+      (define wading (clamp01 (/ (max (- SEA-LEVEL h) pool) WADE-DEPTH)))
       (attribute-set! player 'speed
                       (* (if (> (call-method held-keys 'get "shift" 0) 0) SPRINT-SPEED WALK-SPEED)
                          (- 1.0 (* (- 1.0 WADE-SLOWEST) wading))))
@@ -1883,9 +1944,11 @@
                             (+ (cadr steps) (* dt (+ 1.3 (* 0.12 speed)))))))
             (when (>= phase 1.0)
               (set! phase (- phase 1.0))
-              (let* ((variants (list-ref (car steps)
-                                         (let ((surface (surface-at x z h)))
-                                           (list-index (lambda (s) (equal? s surface)) SURFACES))))
+              (let* ((variants (if (and (> (state-ref 'sheltered) 0.4) (< (outdoor-gain) 0.65))
+                                   (list-ref (vector-ref (cave-audio) 0) (if (> pool 0.025) 1 0))
+                                   (let ((surface (surface-at x z h)))
+                                     (list-ref (car steps)
+                                       (list-index (lambda (s) (equal? s surface)) SURFACES)))))
                      (audio (list-ref variants (randrange STEP-VARIANTS))))
                 (attribute-set! audio 'volume (min 0.9 (+ 0.3 (* 0.05 speed) (* 0.35 wading))))
                 (attribute-set! audio 'pitch (- (+ 0.92 (* 0.16 (random))) (* 0.08 wading)))
@@ -1927,6 +1990,7 @@
           (update-life! x z)
           (update-sounds! x z dt)
           (update-owls! x z dt)
+          (update-cave-audio! player x z dt)
           (update-mist! x z dt)
           (update-storm! dt)
           (update-walking! player x z bottom dt)

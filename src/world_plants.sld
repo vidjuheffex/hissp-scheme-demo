@@ -855,7 +855,7 @@
     (define FOREST-CHANCE 0.95)        ; per spot, in the densest wet forest (see `woods`)
     (define JUNIPER-CHANCE 0.09)       ; per spot, in full dry grassland
     (define MESQUITE-CHANCE 0.018)      ; per spot, in full desert
-    (define LEDGE-MESQUITE-CHANCE 0.24)
+    (define LEDGE-TREE-CHANCE 0.24)
     (define MOUNTAIN-PINES (list 17.0 24.0))  ; heights where conifers replace oaks
     (define TREE-LINE (list 27.0 31.0))
     (define TREE-SHORE 1.5)
@@ -911,8 +911,8 @@
     (define (ramp range x)
       (smooth (car range) (cadr range) x))
 
-    ;; (height steepness) of the terrain at grid position (fx fz), in cells
-    ;; from the chunk corner, following the mesh's triangles.
+    ;; (height steepness dx dz) at grid position (fx fz), in cells from the
+    ;; chunk corner. The directional slopes follow the triangle under the spot.
     (define (ground terrain fx fz)
       (let* ((ci (exact (floor fx)))
              (cj (exact (floor fz)))
@@ -922,12 +922,15 @@
              (ha (vector-ref terrain a))
              (hb (vector-ref terrain (+ a 3)))
              (hc (vector-ref terrain (+ a (* 3 VERTS))))
-             (hd (vector-ref terrain (+ a (* 3 VERTS) 3))))
-        (list (if (<= (+ u v) 1.0)
+             (hd (vector-ref terrain (+ a (* 3 VERTS) 3)))
+             (lower? (<= (+ u v) 1.0)))
+        (list (if lower?
                   (+ ha (* (- hb ha) u) (* (- hc ha) v))
                   (+ hd (* (- hc hd) (- 1.0 u)) (* (- hb hd) (- 1.0 v))))
               (/ (max (abs (- hb ha)) (abs (- hc ha)) (abs (- hd hb)) (abs (- hd hc)))
-                 CELL))))
+                 CELL)
+              (if lower? (- hb ha) (- hd hc))
+              (if lower? (- hc ha) (- hd hb)))))
 
     ;; Which of the HEADINGS turns a log (lying along x) so it lies across
     ;; the slope at grid position (fx fz), as a fraction for `add!`'s heading
@@ -1029,16 +1032,16 @@
             (let* ((h (car g))
                    (w-grass (max 0.0 (- 1.0 w-desert w-dry w-snowy)))
                    (mountain (ramp MOUNTAIN-PINES h))
-                   (forest (* FOREST-CHANCE woods))
-                   (mesquite (if (and (> w-desert 0.4) (< (cadr g) TREE-MAX-GRADIENT)
+                   (ledge (if (and (< (rand 0) LEDGE-TREE-CHANCE) (< (cadr g) TREE-MAX-GRADIENT)
                                       (> h (+ SEA-LEVEL TREE-SHORE)) (< h (cadr TREE-LINE))
                                       (beside-wall? lx lz h #t))
-                                 LEDGE-MESQUITE-CHANCE MESQUITE-CHANCE))
+                              LEDGE-TREE-CHANCE 0.0))
+                   (forest (max ledge (* FOREST-CHANCE woods)))
                    ;; By TREES index: conifer, oak, juniper, mesquite.
                    (weights (list (* forest (+ w-snowy (* w-grass mountain)))
                                   (* forest w-grass (- 1.0 mountain))
-                                  (* JUNIPER-CHANCE w-dry)
-                                  (* mesquite w-desert)))
+                                  (* (max ledge JUNIPER-CHANCE) w-dry)
+                                  (* (max ledge MESQUITE-CHANCE) w-desert)))
                    (chance (* (apply + weights) (- 1.0 (ramp TREE-LINE h)))))
               (when (and (> chance 0.0)
                          (> h (+ SEA-LEVEL TREE-SHORE))
@@ -1082,10 +1085,9 @@
                                  (* FIELD-ROCK-CHANCE (ramp FIELDS (noise-at lx lz FIELD-FREQUENCY)))
                                  (* SLOPE-ROCK-CHANCE (ramp ROCK-SLOPES (cadr g)))
                                  (* SHORE-ROCK-CHANCE shore)
-                                 (if (and (> w-desert 0.4) (> h SEA-LEVEL)
-                                          (< h (+ SEA-LEVEL 2.0)) (< (cadr g) 0.7)
+                                 (if (and (> h SEA-LEVEL) (< (cadr g) 0.7) (< (rand 0) 0.85)
                                           (beside-wall? lx lz h #f))
-                                     (* w-desert TALUS-CHANCE) 0.0)
+                                     TALUS-CHANCE 0.0)
                                  (* HIGH-ROCK-CHANCE (ramp ROCK-BAND h))))))
               ;; Not on crests and peaks, where they'd stick up against the sky.
               (define (crest?)
@@ -1097,6 +1099,19 @@
                                                   (terrain-height x (+ z r)) (terrain-height x (- z r)))))
                                   (cadr (car crests)))
                                (loop (cdr crests))))))))
+              ;; On sheer faces, bedrock projects along the contour. The
+              ;; center sits inside the cliff and the outer half is exposed.
+              (if (and (> (cadr g) 2.0) (> h SEA-LEVEL)
+                       (< (rand 0) (* 0.6 (ramp GROUPS (noise-at lx lz GROUP-FREQUENCY)))))
+                  (let* ((dx (list-ref g 2)) (dz (list-ref g 3))
+                         (rise (sqrt (+ (* dx dx) (* dz dz)))))
+                    (when (> rise (* 2.0 CELL))
+                      (let ((heading (across-slope terrain (/ lx CELL) (/ lz CELL)))
+                            (inside (/ 0.32 rise)))
+                        (add! ROCKS ROCK-TEMPLATES ROCK-VARIANTS
+                              (if (< (rand 4) (+ w-desert (* 0.6 w-dry))) 4 2)
+                              (lambda (k) (case k ((7) heading) ((6) (+ 0.45 (* 0.55 (rand 6)))) (else (rand k))))
+                              (+ lx (* inside dx)) h 0.25 (+ lz (* inside dz))))))
               (when (and (> h (- SEA-LEVEL 1.5)) (< (rand 0) chance) (not (crest?)))
                 (let* ((kind (if (< (rand 4) (smooth 0.4 0.8 (+ w-desert (* 0.6 w-dry))))
                                  (if (< (rand 3) 0.35) 4 3)
@@ -1107,7 +1122,7 @@
                                     lx h (cadr g) lz))
                        (width (* scale (list-ref (vector-ref ROCKS kind) 4))))
                   (when (>= width BLOCKING-SIZE)
-                    (set! trunks (cons (list (+ ox lx) (+ oz lz) width) trunks))))))))
+                    (set! trunks (cons (list (+ ox lx) (+ oz lz) width) trunks)))))))))
         (and (pair? parts)
              (let ((parts (reverse parts)))
                (append

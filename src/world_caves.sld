@@ -23,6 +23,8 @@
   (export cave-chunk-data
           mouth-clearing
           cave-ground
+          cave-pool-distance
+          cave-pool-depth
           cave-headroom?
           cave-depth
           cave-shelter
@@ -181,7 +183,7 @@
     ;;
     ;; Shapes are vectors: #(0 ax ay az bx by bz r x0 y0 z0 x1 y1 z1 bax bay baz inv)
     ;; for a tunnel segment between centres a and b, radius r; and
-    ;; #(1 cx cy cz rx ry rz rmin x0 y0 z0 x1 y1 z1) for a cavern.
+    ;; #(1 cx cy cz rx ry rz rmin x0 y0 z0 x1 y1 z1 pool) for a cavern.
 
     (define (capsule ax ay az bx by bz r)
       (let ((bax (- bx ax)) (bay (- by ay)) (baz (- bz az)) (pad (+ r BAND ROUGH)))
@@ -191,9 +193,24 @@
                 bax bay baz (/ 1.0 (max 1e-6 (+ (* bax bax) (* bay bay) (* baz baz)))))))
 
     (define (blob cx cy cz rx ry rz)
-      (let ((px (+ rx BAND ROUGH)) (py (+ ry BAND ROUGH)) (pz (+ rz BAND ROUGH)))
+      (let* ((px (+ rx BAND ROUGH)) (py (+ ry BAND ROUGH)) (pz (+ rz BAND ROUGH))
+             (y (- cy (* 0.5 ry)))
+             (pool (and (> y (+ SEA-LEVEL 0.55)) (> ry 2.4)
+                        (< (hash2 cx cz) 0.22)
+                        (list (+ 0.5 (fast-floor cx)) (+ 0.5 (fast-floor cz)) (- y 0.16)
+                              (+ 1.75 (* 0.45 (hash2 (+ cx 13.5) cz)))
+                              (+ 1.45 (* 0.40 (hash2 cx (+ cz 5.7))))))))
         (vector 1 cx cy cz rx ry rz (min rx ry rz)
-                (- cx px) (- cy py) (- cz pz) (+ cx px) (+ cy py) (+ cz pz))))
+                (- cx px) (- cy py) (- cz pz) (+ cx px) (+ cy py) (+ cz pz) pool)))
+
+    ;; Pool coordinates and level are shared by the cave field and water
+    ;; mesh. The footprint extends under the bank so the floor shapes the shore.
+    (define (pool-at p)
+      (and (= (vector-ref p 0) 1) (vector-ref p 14)))
+
+    (define (pool-radius-squared pool x z)
+      (+ (square (/ (- x (car pool)) (list-ref pool 3)))
+         (square (/ (- z (cadr pool)) (list-ref pool 4)))))
 
     ;; Nodes are #(x floor z r). A tunnel between two has its middle line
     ;; FLOOR-DROP radii over the floors.
@@ -370,6 +387,7 @@
                                         (tunnel end (vector (vector-ref target 0) (vector-ref target 1)
                                                             (vector-ref target 2) (vector-ref end 3))))
                            (set! openings (cons other openings))))))))
+               (fit-pools! prims openings caverns)
                (let loop ((k 0) (x0 1e9) (z0 1e9) (x1 -1e9) (z1 -1e9))
                  (if (= k (vector-length prims))
                      (vector prims (list mouth) openings (list x0 z0 x1 z1) size caverns
@@ -437,12 +455,16 @@
     ;; caves that matter somewhere.
 
     (define (context-of cave-list)
-      (let ((prims (vector)) (openings '()))
+      (let ((prims (vector)) (openings '()) (pools '()))
         (for-each (lambda (cave)
                     (call-method prims 'extend (vector-ref cave 0))
+                    (vector-for-each (lambda (room)
+                                       (let ((pool (pool-at room)))
+                                         (when pool (set! pools (cons pool pools)))))
+                                     (vector-ref cave 5))
                     (set! openings (append (vector-ref cave 2) openings)))
                   cave-list)
-        (vector prims openings)))
+        (vector prims openings pools)))
 
     ;; Signed distance from shape `p` at (x, y, z), roughness `n`: the wall
     ;; or the flat floor, whichever is nearer the open space.
@@ -558,7 +580,68 @@
               limits))))
 
     (define (roofed ctx x y z ground)
-      (with-roof (cave-distance (vector-ref ctx 0) x y z) y ground (limits-at ctx x z)))
+      (let* ((pools (if (> (vector-length ctx) 2) (vector-ref ctx 2) '()))
+             (shifted (pool-sample-y (pool-profile pools x z) y)))
+        (with-roof (cave-distance (vector-ref ctx 0) x shifted z) y ground (limits-at ctx x z))))
+
+    ;; Fit the water to the already blended floor. At junctions the
+    ;; chamber's nominal floor can be well above the actual floor.
+    (define (fit-pools! prims openings rooms)
+      (define (floor-at x z hint)
+        (let* ((g (terrain-height x z)) (limits (roof-at openings x z (terrain-tilt x z)))
+               (air? (lambda (y) (< (with-roof (cave-distance prims x y z) y g limits) 0.0))))
+          (and (air? (+ hint 1.0))
+            (let descend ((hi (+ hint 1.0)))
+              (let ((lo (- hi 0.15)))
+                (cond ((< lo (- hint 2.0)) #f)
+                      ((air? lo) (descend lo))
+                      (else (* 0.5 (+ lo hi)))))))))
+      (vector-for-each
+        (lambda (room)
+          (let ((pool (pool-at room)))
+            (when pool
+              (let* ((x (car pool)) (z (cadr pool)) (hint (+ (list-ref pool 2) 0.16))
+                     (rx (list-ref pool 3)) (rz (list-ref pool 4))
+                     (floor-y (floor-at x z hint))
+                     (bank (and floor-y
+                                (map (lambda (a)
+                                       (floor-at (+ x (* rx (cos a))) (+ z (* rz (sin a))) hint))
+                                     '(0.0 1.57 3.14 4.71))))
+                     (level (and bank (not (memq #f bank))
+                                 (- (min floor-y (apply min bank)) 0.12))))
+                (vector-set! room 14
+                  (and level (> floor-y (+ SEA-LEVEL 0.44)) (> level (- floor-y 0.30))
+                       (> (nearest-opening openings x (+ level 1.5) z) 6.0)
+                       (list x z level rx rz)))))))
+        rooms))
+
+    (define (pool-profile pools x z)
+      (let loop ((pools pools))
+        (and (pair? pools)
+             (let* ((p (car pools)) (r (pool-radius-squared p x z)))
+               (if (< r 1.0)
+                   (cons (list-ref p 2) (* 0.42 (fade (- 1.0 r))))
+                   (loop (cdr pools)))))))
+
+    ;; Damp stone follows the waterline, including the floor under its
+    ;; shallows. Limit the vertical band so rock on another level stays dry.
+    (define (pool-bank-wetness pools x y z)
+      (let loop ((pools pools) (wet 0.0))
+        (if (null? pools)
+            wet
+            (let* ((p (car pools)) (dy (- y (list-ref p 2))))
+              (loop (cdr pools)
+                    (if (< -0.65 dy 0.8)
+                        (max wet (* (- 1.0 (ramp 0.10 0.8 (abs dy)))
+                                    (- 1.0 (ramp 0.65 2.2 (pool-radius-squared p x z)))))
+                        wet))))))
+
+    ;; Move only samples near the bed. A passage above or below the
+    ;; chamber keeps its own ceiling and floor.
+    (define (pool-sample-y profile y)
+      (if profile
+          (+ y (* (cdr profile) (- 1.0 (ramp 0.55 1.2 (abs (- y (car profile)))))))
+          y))
 
     ;; Positive in open air and caves, negative in rock. A smooth union
     ;; rounds the mouth instead of leaving a thin wedge where the two
@@ -591,6 +674,28 @@
                  (or (and (> x (vector-ref p 8)) (< x (vector-ref p 11))
                           (> z (vector-ref p 10)) (< z (vector-ref p 13)))
                      (loop (+ k 1))))))))
+
+    ;; Fold over the pool sites in the same nearby chambers as walking.
+    (define (near-pools x z combine initial)
+      (let ((ctx (context-near x z)) (result initial))
+        (when ctx
+          (for-each (lambda (pool) (set! result (combine pool result))) (vector-ref ctx 2)))
+        result))
+
+    (define (cave-pool-distance x y z)
+      (near-pools x z
+        (lambda (pool nearest)
+          (min nearest (sqrt (+ (square (- x (car pool))) (square (- z (cadr pool)))
+                                (square (- y (list-ref pool 2)))))))
+        24.0))
+
+    (define (cave-pool-depth x y z)
+      (near-pools x z
+        (lambda (pool depth)
+          (let ((d (- (list-ref pool 2) y)))
+            (if (and (< 0.0 d 0.6) (< (pool-radius-squared pool x z) 1.0))
+                (max depth d) depth)))
+        0.0))
 
     ;; The ground under feet at height `feet` in (x, z) where a cave could
     ;; change it, or #f to use `ground` (the terrain height) as it is. From
@@ -692,12 +797,14 @@
     (define VERTS (+ CHUNK-SIZE 1))      ; terrain vertices a side, and cell columns
     (define NEAR 1.0)                    ; meters from a cave that leave the ground as the terrain's
     ;; The mesh for the chunk at (ox, oz) if a cave reaches it, else #f:
-    ;; (vertices normals colors uvs triangles), drawn with the terrain's
+    ;; (vertices normals colors uvs triangles bodies), drawn with the terrain's
     ;; shader in place of the terrain. `heights` are the chunk's height
     ;; samples, SIDE a side from a meter before its corner; `colors` and
     ;; `normals` the terrain's, VERTS a side. The uvs are (depth shelter):
     ;; how dark it is, 0 outside to 1 deep in, and how far in under the
-    ;; rock, 0 under the sky to 1.
+    ;; rock, 0 under the sky to 1. Damp rock adds up to 0.75 to shelter.
+    ;; Dripstone and water start at 2 and 4 respectively. Each body is
+    ;; (world-x world-z radius bottom top) for player collision.
     (define (cave-chunk-data ox oz heights colors normals pause)
       (let* ((x0 (- ox 1.0)) (z0 (- oz 1.0))
              (near (caves-in x0 z0 (+ x0 SIDE) (+ z0 SIDE) 0.0 #f)))
@@ -712,12 +819,174 @@
                                (vector-ref ctx 0))
                              out)))
                (and (> (vector-length prims) 0)
-                    (chunk-surface ox oz heights colors normals (vector prims (vector-ref ctx 1)) pause))))))
+                    (chunk-surface ox oz heights colors normals
+                      (vector prims (vector-ref ctx 1) (vector-ref ctx 2)) pause))))))
+
+    ;; Leave a shoulder either side of a tunnel's centerline. At a crossing
+    ;; only a passage on this level needs the clearance.
+    (define (on-path? prims x y z)
+      (let loop ((i 0))
+        (and (< i (vector-length prims))
+             (let ((p (vector-ref prims i)))
+               (or (and (= (vector-ref p 0) 0)
+                        (let* ((dx (vector-ref p 14)) (dz (vector-ref p 16))
+                               (u (- x (vector-ref p 1))) (v (- z (vector-ref p 3)))
+                               (t (clamp01 (/ (+ (* u dx) (* v dz))
+                                              (max 0.001 (+ (* dx dx) (* dz dz)))))))
+                          (and (< (abs (- y (vector-ref p 2) (* t (vector-ref p 15)))) 2.5)
+                               (< (+ (square (- u (* t dx))) (square (- v (* t dz)))) 4.4))))
+                   (loop (+ i 1)))))))
+
+    ;; Rings run bottom to top. The tips and buried ends are capped so the
+    ;; additional rock is closed under the same winding rule as the cave.
+    (define (dripstone! kind x z lo hi radius rand vertex! triangles)
+      (let* ((sides (+ (if (< radius 0.18) 5 8) (fast-floor (* 4 (rand 2)))))
+             (phase (* 2.0 PI (rand 3))) (angle (* 2.0 PI (rand 4)))
+             (ca (cos angle)) (sa (sin angle))
+             (blade (if (< (rand 5) 0.24) 0.36 (+ 0.62 (* 0.38 (rand 5)))))
+             (bend (* radius (- (rand 6) 0.5) 0.8))
+             (power (+ 0.45 (* 1.7 (rand 7))))
+             (mineral (+ 2.0 (* 0.9 (rand 8))))
+             (flutes (+ 3 (fast-floor (* 3 (rand 9)))))
+             (terraced? (and (eq? kind 'standing) (< (rand 19) 0.52)))
+             (waist (+ 0.24 (* 0.48 (rand 10))))
+             (rings (cond (terraced? 10) ((< radius 0.18) 4) (else 6)))
+             (directions (make-vector sides #f)) (start #f))
+        (define (tri a b c) (call-method triangles 'extend (list a b c)))
+        (do ((i 0 (+ i 1))) ((= i sides))
+          (let* ((a (* 2.0 PI (/ i sides 1.0))) (c (cos a)) (s (sin a)))
+            (vector-set! directions i
+              (vector c s (+ (* flutes a) phase) (* 0.09 (sin (+ (* 2 a) phase)))
+                      (+ (* blade c ca) (* s sa)) (- (* s ca) (* blade c sa))))))
+        (do ((j 0 (+ j 1))) ((> j rings))
+          (let* ((t (/ j rings 1.0))
+                 (u (if (eq? kind 'hanging) t (- 1.0 t)))
+                 (slope (cond ((eq? kind 'column) (* 1.8 (- waist t)))
+                              ((eq? kind 'standing) 1.0) (else -1.0)))
+                 (width (* radius (if (and terraced? (odd? j)) 1.34 1.0)
+                           (if (eq? kind 'column)
+                               (+ 0.27 (* 0.78 (expt (abs (/ (- t waist)
+                                   (if (< t waist) waist (- 1.0 waist)))) 1.7)))
+                               (+ (if (eq? kind 'standing) 0.09 0.022)
+                                  (* 0.88 (expt u power)) (* 0.18 (expt u 5)))))))
+            (do ((i 0 (+ i 1))) ((= i sides))
+              (let* ((d (vector-ref directions i))
+                     (lobe (+ 1.0 (* 0.16 (cos (+ (vector-ref d 2) (* 0.8 t)))) (vector-ref d 3)))
+                     (dx (+ (* width lobe (vector-ref d 0)) (* bend (sin (* PI t)))))
+                     (dz (* width lobe blade (vector-ref d 1)))
+                     (v (vertex! (+ x (* dx ca) (* dz sa)) (lerp lo hi t)
+                                 (+ z (* dz ca) (* -1.0 dx sa)) mineral
+                                 (unit (list (vector-ref d 4) (* slope blade (min 0.4 (/ radius (- hi lo))))
+                                             (vector-ref d 5))))))
+                (unless start (set! start v))
+                (when (> j 0)
+                  (let* ((next (+ start (* j sides) (modulo (+ i 1) sides)))
+                         (bottom (- v sides)) (adj (- next sides)))
+                    (tri bottom adj v) (tri adj next v)))))))
+        (let ((bottom (vertex! x lo z mineral '(0 -1 0))) (top (vertex! x hi z mineral '(0 1 0)))
+              (last (+ start (* rings sides))))
+          (do ((i 0 (+ i 1))) ((= i sides))
+            (let ((next (modulo (+ i 1) sides)))
+              (tri bottom (+ start next) (+ start i))
+              (tri top (+ last i) (+ last next)))))))
+
+    ;; A level water surface extends into the banks. Its bottom is buried
+    ;; below the basin, keeping the water mesh closed for chunk welding.
+    (define (drip-pool! pool vertex! triangles)
+      (let* ((sides 24)
+             (x (car pool)) (z (cadr pool)) (y (list-ref pool 2))
+             (bed (- y 0.50))
+             (base (vertex! x bed z 4.01 '(0 -1 0)))
+             (water (vertex! x y z 4.0 '(0 1 0)))
+             (start (+ water 1)))
+        (do ((j 0 (+ j 1))) ((= j 2))
+          (do ((i 0 (+ i 1))) ((= i sides))
+            (let ((a (* 2.0 PI (/ i sides 1.0))))
+              (vertex! (+ x (* 1.10 (list-ref pool 3) (cos a))) (if (= j 0) bed y)
+                       (+ z (* 1.10 (list-ref pool 4) (sin a))) 4.99
+                       (if (= j 0) '(0 -1 0) '(0 1 0))))))
+        (do ((i 0 (+ i 1))) ((= i sides))
+          (let* ((a (+ start i)) (b (+ start (modulo (+ i 1) sides)))
+                 (c (+ a sides)) (d (+ b sides)))
+            (call-method triangles 'extend (list base b a a b c b d c water c d))))))
+
+    ;; Work on the mesher's vertical samples, pairing each open interval
+    ;; with its own roof, even when two tunnels cross on different levels.
+    (define (decorate-cave! ox oz ctx caved ground ny ylo value-at vertex-writer triangles pause)
+      (let* ((prims (vector-ref ctx 0)) (openings (vector-ref ctx 1))
+             (offset (seed-offset)) (bodies '()) (pools (vector-ref ctx 2)))
+        (define (decorate x z floor ceiling pool rand)
+          (let* ((gap (- ceiling floor)) (mid (* 0.5 (+ floor ceiling)))
+                 (opening (nearest-opening openings x mid z))
+                 (depth (ramp (car DARK) (cadr DARK) opening))
+                 (stone-vertex (vertex-writer x z depth))
+                 (path? (on-path? prims x (+ floor 1.4) z))
+                 (over-water? (and pool (= x (car pool)) (= z (cadr pool))))
+                 (roll (rand 1)))
+            (define (emit kind length radius)
+              (let ((lo (if (eq? kind 'hanging) (- ceiling length) (- floor (* 0.6 radius) 0.16)))
+                    (hi (if (eq? kind 'standing) (+ floor length) (+ ceiling radius 0.20))))
+                (dripstone! kind x z lo hi radius rand stone-vertex triangles)
+                ;; Adjacent drip paths share a flared root. Their unequal
+                ;; lengths give a curtain a broken fringe in silhouette.
+                (when (and (eq? kind 'hanging) (> length 0.5)
+                           (< (rand 20) (if over-water? 0.88 0.35)))
+                  (do ((n 0 (+ n 1))) ((> n (fast-floor (* 3 (rand 21)))))
+                    (let* ((a (+ (* 2 PI (rand 22)) (* n 2.3)))
+                           (r (* radius (+ 0.30 (* 0.36 (rand (+ n 23))))))
+                           (sx (+ x (* radius 0.9 (cos a)))) (sz (+ z (* radius 0.9 (sin a))))
+                           (tip (- ceiling (* length (+ 0.34 (* 0.49 (rand (+ n 27))))))))
+                      (dripstone! kind sx sz tip (+ hi 0.12) r
+                                  (lambda (k) (rand (+ k 30 n))) stone-vertex triangles))))
+                (set! bodies (cons (list x z (* 0.83 radius) lo hi) bodies))))
+            (when (and (> gap 1.45) (> opening 6.0))
+              (when over-water?
+                (drip-pool! pool stone-vertex triangles))
+              (cond ((and (not pool) (not path?) (> gap 3.0) (< roll 0.13))
+                     (emit 'column gap (min 1.05 (+ 0.27 (* 0.12 gap (rand 14))))))
+                    ((or (not pool) over-water? (< roll 0.34))
+                     (when (or pool path? (> roll 0.49))
+                       (let ((len (min (* gap (+ 0.09 (* 0.49 (square (rand 15)))))
+                                       (if path? (- gap 2.35) gap))))
+                         (when (> len 0.18)
+                           (emit 'hanging len (+ 0.08 (* len (+ 0.08 (* 0.29 (rand 16)))))))))
+                     (when (and (not path?) (not pool) (< roll 0.69))
+                       (let ((len (* gap (+ 0.08 (* 0.43 (square (rand 17)))))))
+                         (emit 'standing len (min 0.85 (+ 0.16 (* len (+ 0.12 (* 0.36 (rand 18))))))))))))))
+        (do ((k 1 (+ k 1))) ((> k CHUNK-SIZE))
+          (do ((i 1 (+ i 1))) ((> i CHUNK-SIZE))
+            (let ((col (+ i (* k POINTS))))
+              (when (vector-ref caved col)
+                (let* ((x (+ ox i -0.5)) (z (+ oz k -0.5))
+                       (sx (+ x (car offset))) (sz (+ z (cadr offset)))
+                       (near (filter (lambda (p) (< (pool-radius-squared p x z) 1.2)) pools))
+                       (pick (hash2 sx sz)))
+                  (when (or (pair? near) (< pick 0.05)
+                            (and (< pick 0.25) (> (value-noise (/ sx 7.0) (/ sz 7.0)) 0.42)))
+                    (let scan ((j 1) (a (value-at i 0 k)) (floor #f))
+                      (when (< (+ ylo j) (vector-ref ground col))
+                        (let* ((b (value-at i j k))
+                               (crossing (and (not (eq? (> a 0) (> b 0)))
+                                              (+ ylo j -1 (/ a (- a b))))))
+                          (when (and floor crossing (> a 0))
+                            (let ((pool (and (pair? near) (< (abs (- (list-ref (car near) 2) floor)) 0.55)
+                                             (> (- crossing floor) 2.8) (car near))))
+                              (decorate x z floor crossing pool
+                                (lambda (salt) (hash2 (+ sx (* 17.13 salt)) (+ sz (* 3.9 salt) (fast-floor floor)))))))
+                          (when (< (+ j 1) ny)
+                            (scan (+ j 1) b (if crossing (and (> b 0) crossing) floor)))))))))))
+          (pause))
+        bodies))
 
     (define (chunk-surface ox oz heights colors normals ctx pause)
       (let* ((x0 (- ox 1.0)) (z0 (- oz 1.0))
              (prims (vector-ref ctx 0))
              (openings (vector-ref ctx 1))
+             (pools (filter (lambda (pool)
+                              (let ((x (car pool)) (z (cadr pool)))
+                                (and (< (- x0 3.0) x (+ x0 SIDE 3.0))
+                                     (< (- z0 3.0) z (+ z0 SIDE 3.0)))))
+                            (vector-ref ctx 2)))
              (low (let loop ((k 0) (lo 1e9))
                     (if (= k (vector-length heights)) lo (loop (+ k 1) (fast-min lo (vector-ref heights k))))))
              (high (let loop ((k 0) (hi -1e9))
@@ -731,6 +1000,7 @@
              (ny (+ (- yhi ylo) 1))
              (count (* POINTS POINTS ny))
              (ground (make-vector (* POINTS POINTS) 0.0))   ; the ground at each grid column
+             (basins (and (pair? pools) (make-vector (* POINTS POINTS) #f)))
              (caved (make-vector (* POINTS POINTS) #f))     ; columns some cave shape reaches
              (acc (make-vector count #f))                   ; the shapes blended so far
              (noise (make-vector count #f))
@@ -798,9 +1068,10 @@
                   (let ((z (+ z0 k 0.5)) (row (* POINTS (+ k (* POINTS j)))))
                     (do ((i i0 (+ i 1))) ((> i i1))
                       (let* ((n (+ i row)) (x (+ x0 i 0.5))
-                             (d (prim-distance p x y z
+                             (sy (if basins (pool-sample-y (vector-ref basins (+ i (* k POINTS))) y) y))
+                             (d (prim-distance p x sy z
                                                (or (vector-ref noise n)
-                                                   (let ((r (rough x y z)))
+                                                   (let ((r (rough x sy z)))
                                                      (vector-set! noise n r)
                                                      r))))
                              (c (vector-ref acc n)))
@@ -917,15 +1188,19 @@
                  (pz (+ z (* 0.3 (list-ref normal 2))))
                  (g (ground-near px pz))
                  (under (and (> g (+ py 0.5))
-                             (< (with-roof (cave-distance prims px py pz) py g
+                             (< (with-roof (cave-distance prims px
+                                               (if (pair? pools) (pool-sample-y (pool-profile pools px pz) py) py)
+                                               pz) py g
                                            (roof-at openings px pz
                                                     (tilt (- (ground-near (+ px 0.5) pz) (ground-near (- px 0.5) pz))
                                                           (- (ground-near px (+ pz 0.5)) (ground-near px (- pz 0.5))))))
                                 0.0)))
-                 (opening (if under (nearest-opening openings px py pz) 0.0)))
+                 (opening (if under (nearest-opening openings px py pz) 0.0))
+                 (shelter (ramp (car SHELTER) (cadr SHELTER) opening))
+                 (damp (if (and (= shelter 1.0) (pair? pools)) (pool-bank-wetness pools x y z) 0.0)))
             (let ((v (add-vertex! x y z normal (terrain-mix colors 4 (- x ox) (- z oz))
-                                  (list (if under (ramp (car DARK) (cadr DARK) opening) 0.0)
-                                        (if under (ramp (car SHELTER) (cadr SHELTER) opening) 0.0)))))
+                                  (list (ramp (car DARK) (cadr DARK) opening)
+                                        (+ shelter (* 0.75 damp))))))
               (when shaped (hash-table-set! face-shaded v #t))
               v)))
         ;; Triangles made twice, either way round, are folds where cells
@@ -974,6 +1249,8 @@
                           (quad! (car vs) (cadr vs) (list-ref vs 2) (list-ref vs 3))))))))))
         (do ((k 0 (+ k 1))) ((= k POINTS))
           (do ((i 0 (+ i 1))) ((= i POINTS))
+            (when basins
+              (vector-set! basins (+ i (* POINTS k)) (pool-profile pools (+ x0 i 0.5) (+ z0 k 0.5))))
             (vector-set! ground (+ i (* POINTS k))
                          (* 0.25 (+ (sample i k) (sample (+ i 1) k) (sample i (+ k 1)) (sample (+ i 1) (+ k 1)))))))
         (vector-for-each fill! prims)
@@ -1042,7 +1319,13 @@
               (when (= (hash-table-ref tri-count key) 1)
                 (call-method triangles 'extend (list a b c)))))
           (shade-by-faces! vertices normals-out triangles face-shaded)
-          (list vertices normals-out colors-out uvs triangles))))
+          (let ((bodies (decorate-cave! ox oz ctx caved ground ny ylo value-at
+                           (lambda (x z depth)
+                             (let ((color (terrain-mix colors 4 (- x ox) (- z oz))))
+                               (lambda (x y z material normal)
+                                 (add-vertex! x y z normal color (list depth material)))))
+                           triangles pause)))
+            (list vertices normals-out colors-out uvs triangles bodies)))))
 
     ;; Whether the a-c diagonal fixes a folded terrain-transition quad.
     (define (split-ac? vertices a b c d)

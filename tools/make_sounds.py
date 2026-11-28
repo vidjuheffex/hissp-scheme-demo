@@ -8,7 +8,7 @@ end wrap around to the start. The game fades the loops in and out; see
 
     uv run --no-project --with numpy --with soundfile tools/make_sounds.py [names...]
 
-With names (wind, rain, birds, crickets, water, river, woods, owls, steps, thunder), only those
+With names (wind, rain, birds, crickets, water, river, woods, owls, steps, thunder, cave), only those
 are written.
 """
 
@@ -431,6 +431,75 @@ def thunder(near):
     return reverb(out, 1.8, 0.3)
 
 
+def cave_space(x, wet, tail, reflect=1.0):
+    """`x` heard in a cave: a few irregular early reflections, then a smooth
+    diffuse tail `tail` seconds long that darkens as it dies (the highs go
+    first, as they do off damp rock). `wet` scales the tail's energy against
+    the dry sound's; `reflect` scales the early reflections. Evenly spaced echoes are
+    what a pair of parallel walls sounds like, and they rattle; reflections
+    here fall at random times and levels, and the tail is noise, never a copy
+    of the sound."""
+    m = seconds(tail)
+    t = np.arange(m) / RATE
+    low = shaped_noise(m, 90, 1400, -0.3) * np.exp(-6.9 * t / tail)
+    high = shaped_noise(m, 1400, 7000, -0.4) * np.exp(-6.9 * t / (0.4 * tail)) * 0.7
+    diffuse = (low + high) * np.clip(t / 0.03, 0, 1)  # builds up as the reflections thicken
+    diffuse *= wet / np.sqrt(np.sum(diffuse ** 2))
+    early = np.zeros(m)
+    for at in np.sort(rng.uniform(0.012, 0.14, rng.integers(5, 8))):
+        early[seconds(at)] += rng.uniform(0.3, 0.6) * np.exp(-at / 0.09)
+    early = reflect * np.convolve(early, hann(6) / np.sum(hann(6)), "same")  # rock takes the edge off
+    ir = early + diffuse
+    n = len(x) + m
+    dry = np.zeros(n)
+    dry[: len(x)] = x
+    out = dry + np.fft.irfft(np.fft.rfft(dry) * np.fft.rfft(ir, n), n)
+    fade = np.ones(n)
+    fade[-seconds(0.15):] = np.linspace(1, 0, seconds(0.15))
+    return out * fade
+
+
+def bloop(f0, tau, gain):
+    """A water drop's bloop: a round sine at `f0` Hz that starts a little low,
+    swoops up to `f0` as the bubble settles, and rings for `tau` seconds."""
+    t = np.arange(seconds(7 * tau)) / RATE
+    glide = f0 * (1 - 0.2 * np.exp(-t / 0.01))
+    return tone(glide, np.exp(-t / tau) * np.clip(t / 0.001, 0, 1) * gain, (1.0, 0.08))
+
+
+def drip():
+    """One drop falling into a still pool, heard in a cave: a low, round bloop
+    (a bigger drop rings lower and longer), sometimes with a smaller droplet
+    landing a moment later. No click, no high ring: the bright parts sounded
+    like chirps."""
+    x = np.zeros(seconds(0.6))
+    f0 = np.exp(rng.uniform(np.log(380), np.log(800)))
+    tau = rng.uniform(0.035, 0.06) * np.sqrt(600 / f0)
+    place(x, bloop(f0, tau, 1.0), 0)
+    if rng.uniform() < 0.5:
+        place(x, bloop(1.5 * f0, 0.6 * tau, 0.35), seconds(rng.uniform(0.12, 0.22)))
+    return cave_space(x, 0.35, 0.9, reflect=0.4)  # a drop in a pool: a light room
+
+
+def cave_step(surface):
+    """A step on `surface` ("rock" or "water") as the cave answers it. The
+    tail is shorter than the drips' so quick strides don't smear together."""
+    dry = footstep(surface)
+    return cave_space(dry, 0.9 if surface == "rock" else 0.6, 1.3)
+
+
+def make_cave():
+    """Cave sounds: the drips and the steps in a cave. Own random stream, so
+    the other sounds don't change when these are made."""
+    global rng
+    rng = np.random.default_rng(23)
+    for k in (1, 2, 3):
+        save(f"cave/drip-{k}", drip(), 0.5)
+    for surface in ("rock", "water"):
+        for k in range(1, 5):
+            save(f"steps/cave-{surface}-{k}", cave_step(surface), 0.65)
+
+
 def make(name, make_sound):
     if len(sys.argv) < 2 or name in sys.argv[1:]:
         make_sound()
@@ -449,3 +518,4 @@ if __name__ == "__main__":
                            for surface, loudness in FOOTSTEP_LOUDNESS.items() for k in range(1, 5)])
     make("thunder", lambda: [save(f"thunder-{kind}-{k}", thunder(kind == "near"), 0.9)
                              for kind in ("near", "far") for k in (1, 2)])
+    make("cave", make_cave)

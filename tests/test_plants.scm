@@ -45,14 +45,15 @@
 
 ;; Keep the same strip of dry ground and the same placement rolls. Lower
 ;; one side and raise the other to turn that strip into a sandstone shelf.
-(define (bank-material height material wall?)
+(define (bank-material height material wall? . biome)
   (let* ((side (+ CHUNK-RES 1)) (n (* side side))
          (vs (make-vector (* n 3) 0.0)) (colors (make-vector (* n 4) 0.0)))
     (do ((i 0 (+ i 1))) ((= i n))
       (let ((x (remainder i side)))
         (vector-set! vs (+ (* i 3) 1)
                      (+ height (cond ((not wall?) 0) ((< x 10) -5) ((>= x 16) 8) (else 0))))
-        (vector-set! colors (* 4 i) 1.0)))
+        (let ((channel (if (pair? biome) (car biome) 0)))
+          (when channel (vector-set! colors (+ (* 4 i) channel) 1.0)))))
     (let chunks ((k 0) (count 0))
       (if (= k 8) count
           (let* ((oz (* k CHUNK-SIZE))
@@ -68,5 +69,14 @@
              (> (bank-material 12.0 6 #t) (bank-material 12.0 6 #f)))
 (test-assert "fallen rock collects at the foot of a dry wall"
              (> (bank-material 6.6 10 #t) (bank-material 6.6 10 #f)))
+
+(for-each
+  (lambda (channel material name)
+    (test-assert name (> (bank-material 12.0 material #t channel)
+                         (bank-material 12.0 material #f channel))))
+  '(2 #f 1) '(7 8 8)
+  '("snowy ledges support conifers" "grassland ledges support oaks" "dry grassland ledges support junipers"))
+(test-assert "talus collects below grey cliffs above the shoreline"
+             (> (bank-material 12.0 10 #t #f) (bank-material 12.0 10 #f #f)))
 
 (test-end "plants")

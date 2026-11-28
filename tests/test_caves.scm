@@ -17,6 +17,95 @@
 (define SITES '((-4 3) (-3 2) (-1 -4) (0 -1) (0 3) (2 2) (3 -2) (0 4)))
 (define MAX-CLIMB 2.0)   ; as the game's: meters of rise per meter walked
 
+(test-begin "caves")
+
+;; The seed's chamber off the sandstone mouth has water centered here.
+(let* ((x -428.5) (z 334.5) (ox -448) (oz 320)
+       (mesh (list-ref (chunk-mesh-data ox oz no-pause
+                         (lambda (h c n) (cave-chunk-data ox oz h c n no-pause))) 5))
+       (vs (car mesh)) (uv (list-ref mesh 3))
+       (water (let scan ((i 0))
+                (and (< (* 2 i) (vector-length uv))
+                     (if (and (= (vector-ref uv (+ 1 (* 2 i))) 4.0)
+                              (= (+ ox (vector-ref vs (* 3 i))) x)
+                              (= (+ oz (vector-ref vs (+ 2 (* 3 i)))) z))
+                         (vector-ref vs (+ 1 (* 3 i)))
+                         (scan (+ i 1)))))))
+  (caves-ready-near! x z)
+  (let ((bed (cave-ground x z 8.5 (terrain-height x z)))
+        (bank (cave-ground (+ x 2.6) z 8.5 (terrain-height (+ x 2.6) z))))
+    (test-assert "pool water sits between the cave bed and its bank"
+                 (and water bed bank (< bed (- water 0.1)) (< water (- bank 0.06)))))
+  (let ((bank-wet? #f) (wet-away? #f))
+    (do ((i 0 (+ i 1))) ((= (* 2 i) (vector-length uv)))
+      (let* ((material (vector-ref uv (+ 1 (* 2 i))))
+             (dy (- (vector-ref vs (+ 1 (* 3 i))) water))
+             (r2 (+ (square (- (+ ox (vector-ref vs (* 3 i))) x))
+                    (square (- (+ oz (vector-ref vs (+ 2 (* 3 i)))) z)))))
+        (when (and (< 1.0 material 2.0) (< r2 25.0))
+          (when (and (< 0.0 dy 0.45) (< r2 6.25)) (set! bank-wet? #t))
+          (when (or (> dy 1.0) (> r2 12.25)) (set! wet-away? #t)))))
+    (test-assert "the cave floor just above the pool is wet" bank-wet?)
+    (test-equal "the dry floor and ceiling beyond the pool stay dry" #f wet-away?)))
+
+;; Sample the rock at either end of each formation in three chambers. The
+;; hanging, standing and joined forms must actually reach their host rock.
+(let ((hanging 0) (standing 0) (joined 0) (shortest 100.0) (tallest 0.0))
+  (for-each
+    (lambda (site)
+      (let* ((c (apply site-cave site)) (room (vector-ref (vector-ref c 5) 0))
+             (ox (* CHUNK-SIZE (floor (/ (vector-ref room 1) CHUNK-SIZE))))
+             (oz (* CHUNK-SIZE (floor (/ (vector-ref room 3) CHUNK-SIZE))))
+             (ctx (vector (vector-ref c 0) (vector-ref c 2)))
+             (m (list-ref (chunk-mesh-data ox oz no-pause
+                            (lambda (h colors ns) (cave-chunk-data ox oz h colors ns no-pause))) 5)))
+        (for-each
+          (lambda (body)
+            (let* ((x (car body)) (z (cadr body)) (h (terrain-height x z))
+                   (lo (list-ref body 3)) (hi (list-ref body 4))
+                   (base? (< (solid-field ctx x (- lo 0.2) z h) 0))
+                   (crown? (< (solid-field ctx x (+ hi 0.2) z h) 0)))
+              (when (> (solid-field ctx x (* 0.5 (+ lo hi)) z h) 0)
+                (set! shortest (min shortest (- hi lo)))
+                (set! tallest (max tallest (- hi lo)))
+                (cond ((and base? crown?) (set! joined (+ joined 1)))
+                      (base? (set! standing (+ standing 1)))
+                      (crown? (set! hanging (+ hanging 1)))))))
+          (if (and m (> (length m) 5)) (list-ref m 5) '()))))
+    '((-1 -4) (3 -2) (-3 2)))
+  (test-assert "stalactites hang from chamber ceilings" (> hanging 0))
+  (test-assert "stalagmites rise from chamber floors" (> standing 0))
+  (test-assert "columns meet rock at both ends" (> joined 0))
+  (test-assert "short dripstone and room-height formations grow together"
+               (and (< shortest 1.0) (> tallest 3.5))))
+
+;; Water vertices in the cave mesh carry the pool material. Count the
+;; chambers containing water, including dry chambers in the same world.
+(let ((wet 0) (dry 0) (meshes (make-hash-table)))
+  (for-each
+    (lambda (site)
+      (vector-for-each
+        (lambda (room)
+          (let* ((x (vector-ref room 1)) (z (vector-ref room 3))
+                 (ox (* CHUNK-SIZE (floor (/ x CHUNK-SIZE))))
+                 (oz (* CHUNK-SIZE (floor (/ z CHUNK-SIZE))))
+                 (key (list ox oz))
+                 (mesh (or (hash-table-ref/default meshes key #f)
+                           (let ((m (list-ref (chunk-mesh-data ox oz no-pause
+                                      (lambda (h c n) (cave-chunk-data ox oz h c n no-pause))) 5)))
+                             (hash-table-set! meshes key m) m))))
+            (if (and mesh (let ((vs (car mesh)) (uv (list-ref mesh 3)))
+                            (let scan ((i 0))
+                              (and (< (* 2 i) (vector-length uv))
+                                   (or (and (>= (vector-ref uv (+ 1 (* 2 i))) 4.0)
+                                            (< (abs (- (+ ox (vector-ref vs (* 3 i))) x)) (vector-ref room 4))
+                                            (< (abs (- (+ oz (vector-ref vs (+ 2 (* 3 i)))) z)) (vector-ref room 6)))
+                                       (scan (+ i 1)))))))
+                (set! wet (+ wet 1)) (set! dry (+ dry 1)))))
+        (vector-ref (apply site-cave site) 5)))
+    SITES)
+  (test-assert "a minority of chambers hold drip pools" (< 0 wet dry)))
+
 ;; (vertices normals triangles cave?) for the chunk at (cx, cz), its cave
 ;; mesh where a cave reaches it.
 (define cave-meshes (make-hash-table))
@@ -35,8 +124,6 @@
           m))))
 
 ;; --- a mouth on the ground --------------------------------------------------
-
-(test-begin "caves")
 
 ;; A tunnel whose top just meets the ground: no sheet of rock between them.
 (let ((ctx (vector (vector (capsule -2.0 19.0 0.0 4.0 19.0 0.0 2.0))

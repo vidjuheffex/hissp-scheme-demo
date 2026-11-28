@@ -17,6 +17,8 @@
          "test_weather.scm"
          "test_life.scm"
          "test_plants.scm"
+         "test_game.scm"
+         "test_sounds.scm"
          "test_caves.scm")
 (test-end "world")
 (sys-exit (test-exit-code))

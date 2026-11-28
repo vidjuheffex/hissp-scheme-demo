@@ -236,9 +236,21 @@ Footsteps follow the ground underfoot (grass, dirt, sand and forest floor,
 rock, snow, shallow water), with four variations of each; strides quicken and land harder
 the faster you go.
 
-The loops and footsteps are synthesized, not recorded: `tools/make_sounds.py` shapes noise
-and tones in numpy and writes Ogg Vorbis. `(sounds)` in the REPL shows the
-current volumes.
+Deeper in a cave, the outdoor loops, owl calls and thunder fade to silence.
+Rock steps and shallow splashes ring in the cave's room underground. Single
+drips play with pauses between them, closer and more frequent near pools.
+
+The loops and footsteps are synthesized by `tools/make_sounds.py`; `cave`
+alone remakes the cave sounds. The cave steps are the outdoor rock and
+shallow-water steps run through one cave room (`cave_space`): a few
+reflections at irregular times, then a smooth tail that darkens as it dies.
+Evenly spaced echoes were tried first and rattle, so the room never repeats
+a copy of the sound. A drip is one drop: a low, round bloop (a 380–800 Hz bubble
+that starts a little low and swoops up as it rings), sometimes a smaller
+droplet landing after. Drips get a lighter room than the steps, so they
+don't smear into noise.
+`tests/test_sounds.scm` checks the files the game loads are there.
+`(sounds)` in the REPL shows the current outdoor loop volumes.
 
 ## Biomes
 
@@ -266,23 +278,24 @@ What the cut looks like depends on the land it goes through:
   middle (`RIVER-DEPTH`), so every river can be waded.
 - **Higher ground** (`CANYON-RISE`, 8 to 16 m above the sea): the same cut
   drops over a meter or two instead, a canyon with sheer walls, a sandy
-  floor and the river down the middle.
-- **Desert and dry grassland**: the bed stays above water. In higher ground,
-  sandstone shelves split the face into a lower bluff and an upper wall.
-  A seeded noise sampled every 8 m makes each shelf widen and taper along
-  the bank. The shelf is part of the terrain, so you can stand on it.
-  In the desert, a wide shelf with a drop on one side and rock behind it
-  can support a mesquite. Fallen sandstone collects in groups at the foot.
+  floor and the river down the middle. In every biome, exposed beds can
+  form walkable shelves partway up a tall face. The shelf widens and
+  tapers along the bank as the upper wall retreats.
+- **Desert and dry grassland**: the bed stays above water as a dry wash.
 
 Cliff country, rarer (about a tenth of the land, `CLIFF-REGIONS`), turns
 hills, and flat desert as mesas, into sheer steps of 6 m (`CLIFF-STEP`) with
 level ground between: escarpments and buttes. The steps go on before the
 carve, so rivers cut through them and stay wet.
 
+Across both escarpments and canyon walls, slabs project along the face and
+fallen rock gathers below. A broad ledge can hold an oak, juniper, mesquite
+or conifer according to the local biome, elevation and tree line.
+
 Steep rock shows its strata in `terrain.frag`: bands by height, grey-brown
 in most places and red and buff like sandstone in dry country. The shader
-uses the triangle's slope to keep sand off near-vertical faces at the rim
-and the waterline.
+breaks the beds with vertical joints and uses the triangle's slope to keep
+sand off near-vertical faces at the rim and the waterline.
 
 You can walk up anything up to about 63 degrees (`MAX-CLIMB` in
 `src/world_game.sld`), which takes in even the steepest ordinary hillsides,
@@ -291,8 +304,7 @@ a rim and you fall (`GRAVITY`) to the ground below.
 
 The slow channel and cliff noises are sampled on an 8 m lattice
 (`FEATURE-STEP`) and blended, the same way for chunks and for
-`terrain-height`, so the ground you walk on matches the mesh, and chunks
-build no slower than before.
+`terrain-height`, so the ground you walk on matches the mesh.
 
 ## Caves
 
@@ -316,8 +328,21 @@ pass over and under one another.
 Where one would run into another it meets it at the same floor, so every
 junction can be walked. They keep `ROOF` meters of rock overhead, thinning
 out toward a mouth, and stay above the sea. Chambers have flatter floors.
-Stalactites, stalagmites and extra cliff-face detail are deferred while the
-cave geometry is refined.
+
+Dripstone grows in patches. Stalactites range from fine points to fluted
+curtains with several tips. Stalagmites can form squat, terraced mounds or
+tall spires. Where a floor and ceiling join, columns flare at both ends.
+The generator measures each opening separately, including stacked tunnels,
+and reserves headroom along the passage centerline. The formations pick
+up the surrounding rock grain and the player's lantern light. You can
+walk around stalagmites and columns.
+
+Some chambers collect a shallow pool in a depression in the rock floor.
+A chamber gets one seeded chance in roughly five. The water level sits
+below the surrounding floor and the banks shape its shoreline. The rock
+darkens where it gets wet around the pool, like sand at an outdoor shoreline.
+One or more ceiling tips hang over the water, where a small ripple spreads
+from the drip.
 
 A cave is a distance field: tubes and chambers blended smoothly and roughened
 by 3D noise (`ROUGH`). In chunks a cave reaches, surface nets on a 1 m grid
@@ -335,7 +360,8 @@ cave chunk only takes a little longer to appear.
 Daylight reaches about 2 m in from a mouth and is gone by 20 m (`DARK`).
 Inside, you carry a lantern, warm light out to about 12 m
 (`LANTERN_COLOR`, `LANTERN_REACH` in `src/shaders/terrain.frag`). The fog closes in dark,
-rain and snow stop, outside sounds fade, and footsteps sound on rock.
+rain and snow stop, and the sound of steps and occasional drips carries
+through the chamber.
 
 Walking follows the same solid field used to build the mesh, putting your
 feet on the cave floor. Walls and ceilings stop you like cliffs do: you
