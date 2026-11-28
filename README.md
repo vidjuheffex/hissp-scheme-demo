@@ -56,7 +56,7 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 ## Tests
 
 ```sh
-uv run main.py tests/run.scm             # every suite, about a minute and a half; exits 1 on a failure
+uv run main.py tests/run.scm             # every suite, including cave topology and offscreen rendering; exits 1 on a failure
 uv run main.py tests/test_terrain.scm    # one suite while working on it
 ```
 
@@ -71,6 +71,8 @@ flashlight shader checks render into a small offscreen OpenGL buffer:
 - `test_weather.scm`: targets, wind (unit direction, storms harder, nights
   calmer), mist (none in the desert), blooms, rain soaking and drying the
   ground and snow settling and melting, the rain and wind-line meshes.
+- `test_precipitation.scm` tracks a particle in the renderer during an uphill
+  transition to snow, a fast descent and a wrap of the falling distance.
 - `test_life.scm`: when fireflies, bats and birds are out, their mesh, and the
   ground grid fireflies follow.
 - `test_plants.scm`: valid plant meshes, the same plants every time, trunks on dry
@@ -231,7 +233,10 @@ also include: each looks up toward the sun through the same noise to shade
 itself. Rain and snow are 12,000 quads in a box
 that follows the camera, moved entirely in `precip.vert`. They blow
 downwind and gust with the wind (rain slants hard in a storm, snow drifts),
-and streaks lean only a little as you walk. `RAIN-PUSH` and `SNOW-PUSH` in
+and streaks lean only a little as you walk. Each frame adds the distance
+fallen at the current speed, from 9 m/s for rain to 1.2 m/s for snow.
+Nine speed bands vary individual drops by up to 20%. Drops fade at the
+top and bottom of the box as they recycle. `RAIN-PUSH` and `SNOW-PUSH` in
 `src/world_game.sld` set how far the wind pushes them. The weather model
 and its rates are in `src/world_weather.sld`; how weather changes the light is
 in `scene-at` in `src/world_game.sld`.
@@ -347,6 +352,29 @@ The slow channel and cliff noises are sampled on an 8 m lattice
 (`FEATURE-STEP`) and blended, the same way for chunks and for
 `terrain-height`, so the ground you walk on matches the mesh.
 
+The heightfield keeps its 1 m grid for generation and placement. For drawing,
+edges touching steep ground and its shoulders (normal y below 0.85) gain
+half-meter samples of the actual height field. Neighboring chunks make the
+same edge decisions;
+triangles beside a refined edge split too, keeping the surface closed.
+`terrain-surface-data` builds this optional render mesh on the chunk worker,
+including the untouched heightfield around caves. Additional noise is sampled
+in a batch. The finer grid reuses the original heights and computes the
+land shape only where a new vertex or its normal needs it. Water and plants retain the
+original grid. The window requests 4-sample MSAA to soften pixel stair steps
+where the graphics driver supports it; restart the game to apply this setting.
+
+The worker packs static drawing meshes for direct upload to Panda. The main
+thread resumes its search for missing chunks where it stopped and checks for
+distant chunks when the player crosses a chunk boundary. Terrain, plants and
+cutout grass draw in the opaque pass.
+
+On the development machine with seed 4242, the median of five warm
+`generate-chunk` calls was 106 ms at spawn, 96 ms in canyon chunk
+`(-46, -58)` and 1.12 s in formation-heavy cave chunk `(-14, 10)`.
+The same high-detail meshes previously took 144 ms, 147 ms and 1.49 s.
+These are worker CPU times including plants, with pacing sleeps disabled.
+
 ## Caves
 
 Caves open where a canyon wall or an escarpment rises sheer from the
@@ -378,6 +406,13 @@ and reserves headroom along the passage centerline. The formations pick
 up the surrounding rock grain and the player's flashlight beam. You can
 walk around stalagmites and columns.
 
+Dripstone uses 12 to 34 sides according to its width and height: slender tips
+need fewer than broad, fluted roots. Its 12 vertical intervals gather toward
+the ends to round tips and roots; terraced mounds use 28 intervals and keep
+five rounded terraces.
+Lighting normals follow the generated triangles, including their flutes,
+bends and terraces.
+
 Some chambers collect a shallow pool in a depression in the rock floor.
 A chamber gets one seeded chance in roughly five. The water level sits
 below the surrounding floor and the banks shape its shoreline. The rock
@@ -395,8 +430,8 @@ plants and grass above ground.
 
 Nothing grows in front of a mouth: no trees, plants or rocks within
 `PLANT-CLEARING` meters and no grass clumps within `GRASS-CLEARING`
-(`src/world_game.sld`). The work runs on the chunk worker like the rest of the terrain, so a
-cave chunk only takes a little longer to appear.
+(`src/world_game.sld`). The work runs on the chunk worker like the rest of the
+terrain. Dense formations make cave chunks more expensive to generate.
 
 Daylight reaches about 2 m in from a mouth and is gone by 20 m (`DARK`).
 The flashlight comes on as that daylight fades: a bright spot with dimmer
@@ -535,6 +570,10 @@ odd boulder field; `ROCK-CHANCE`, `FIELD-ROCK-CHANCE`, `SLOPE-ROCK-CHANCE`,
 `plant.frag` gives them mottling, granite flecks or sandstone layers,
 lichen on top, snow, and a dark wet sheen in rain. Big boulders block the
 player like trunks.
+
+Rock templates use 16 vertical intervals and 32 sides, retaining their cut
+planes while rounding their silhouettes. Tests bound the longest visible
+edges of rocks and dripstone relative to each connected object's size.
 
 Errors are printed without stopping the game; fix the file and save to recover.
 `src/world_state.sld` and `main.py` need a restart to change.

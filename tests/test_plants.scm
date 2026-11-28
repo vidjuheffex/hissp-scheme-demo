@@ -1,8 +1,7 @@
 ;; (world plants): plant meshes and the trunks the player walks around.
 
-(import (scheme base))
+(import (scheme base) (world terrain) (world plants))
 (include "helpers.scm")
-(import (world terrain) (world plants))
 
 (test-begin "plants")
 
@@ -16,6 +15,11 @@
     (apply chunk-plants ox oz (car m) (list-ref m 4) no-pause options)))
 
 (define grown (map (lambda (c) (cons c (plants-of c))) CHUNKS))
+
+(test-equal "rock silhouettes have no edges longer than a fifth of their size" 0
+  (let ((p (plants-of '(0 0))))
+    (coarse-surfaces (car p) (cadr p) (list-ref p 3)
+      (lambda (i) (= 10 (floor (vector-ref (list-ref p 4) (* 2 i))))) 0.2)))
 
 (test-assert "something grows" (pair? (filter cdr grown)))
 

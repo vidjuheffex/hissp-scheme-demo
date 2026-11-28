@@ -5,12 +5,11 @@
 ;; climb and headroom rules in and out of every mouth and along each main
 ;; tunnel.
 
-(import (scheme base))
-(include "helpers.scm")
-(import (scheme python)
-        (only (world terrain) CHUNK-SIZE SEA-LEVEL set-world-seed! terrain-height chunk-mesh-data)
+(import (scheme base) (scheme python)
+        (only (world terrain) CHUNK-SIZE SEA-LEVEL set-world-seed! terrain-height chunk-mesh-data terrain-surface-data)
         (world caves)
         (only (world plants) chunk-plants))
+(include "helpers.scm")
 
 (set-world-seed! 4242)
 
@@ -18,6 +17,13 @@
 (define MAX-CLIMB 2.0)   ; as the game's: meters of rise per meter walked
 
 (test-begin "caves")
+
+(let* ((ox -448) (oz 320)
+       (m (list-ref (chunk-mesh-data ox oz no-pause
+                       (lambda (h c n) (cave-chunk-data ox oz h c n no-pause))) 5)))
+  (test-equal "dripstone silhouettes have no edges longer than a fifth of their size" 0
+    (coarse-surfaces (car m) (cadr m) (list-ref m 4)
+      (lambda (i) (<= 2.0 (vector-ref (list-ref m 3) (+ 1 (* 2 i))) 3.0)) 0.2)))
 
 ;; The seed's chamber off the sandstone mouth has water centered here.
 (let* ((x -428.5) (z 334.5) (ox -448) (oz 320)
@@ -117,9 +123,9 @@
                                       (lambda (heights colors normals)
                                         (cave-chunk-data ox oz heights colors normals no-pause))))
                (cave (list-ref data 5))
-               (m (if cave
+               (m (append (if cave
                       (list (car cave) (cadr cave) (list-ref cave 4) #t)
-                      (list (car data) (cadr data) (list-ref data 2) #f))))
+                      (list (car data) (cadr data) (list-ref data 2) #f)) (list data))))
           (hash-table-set! cave-meshes key m)
           m))))
 
@@ -140,7 +146,7 @@
 ;; Welds the meshes of every chunk around the cave at `site`, and an extra
 ;; ring, and returns (bad-edges flipped): edges inside the block not met
 ;; exactly once each way, and cave faces turned against their normals.
-(define (weld-check site)
+(define (weld-check site . options)
   (let* ((box (vector-ref (site-cave (car site) (cadr site)) 3))
          (c0x (- (exact (floor (/ (car box) CHUNK-SIZE))) 1))
          (c0z (- (exact (floor (/ (cadr box) CHUNK-SIZE))) 1))
@@ -164,7 +170,7 @@
       (hash-table-update!/default edges (+ (* a 4294967296) b) (lambda (n) (+ n 1)) 0))
     (do ((cx (- c0x 1) (+ cx 1))) ((> cx (+ c1x 1)))
       (do ((cz (- c0z 1) (+ cz 1))) ((> cz (+ c1z 1)))
-        (let* ((m (cave-mesh cx cz))
+        (let* ((m ((if (pair? options) (car options) cave-mesh) cx cz))
                (vs (car m)) (ns (cadr m)) (ts (list-ref m 2))
                (check-faces (and (list-ref m 3) (<= c0x cx c1x) (<= c0z cz c1z)))
                (ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
@@ -200,11 +206,33 @@
               (set! bad (+ bad 1))))))
       (list bad flipped))))
 
+;; Subdivision adds fractional terrain coordinates, so the existing cave
+;; normal check's integer-grid distinction is kept on the original mesh.
+;; Check the drawing mesh separately for cracks across all the same sites.
+(define drawing-meshes (make-hash-table))
+(define (drawing-mesh cx cz)
+  (let ((key (list cx cz)))
+    (or (hash-table-ref/default drawing-meshes key #f)
+        (let* ((ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
+               (data (list-ref (cave-mesh cx cz) 4))
+               (surface (terrain-surface-data ox oz data no-pause))
+               (m (if surface
+                      (list (car surface) (cadr surface) (list-ref surface 4) #f)
+                      (list (car data) (cadr data) (list-ref data 2) #f))))
+          (hash-table-set! drawing-meshes key m)
+          m))))
 (for-each
   (lambda (site)
     (let ((result (weld-check site)))
       (test-equal (named "cave " site ": open or repeated edges") 0 (car result))
-      (test-equal (named "cave " site ": reversed faces") 0 (cadr result))))
+      (test-equal (named "cave " site ": reversed faces") 0 (cadr result)))
+    (test-equal (named "refined drawing mesh " site ": open or repeated edges")
+                0 (car (weld-check site drawing-mesh)))
+    ;; Keep one site's meshes at a time; denser formations make retaining
+    ;; all eight sites needlessly expensive. Every assertion still runs.
+    (for-each (lambda (table)
+                (for-each (lambda (key) (hash-table-delete! table key)) (hash-table-keys table)))
+              (list cave-meshes drawing-meshes)))
   SITES)
 
 ;; --- walking -------------------------------------------------------------------

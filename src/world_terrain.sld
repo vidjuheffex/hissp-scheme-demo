@@ -33,6 +33,7 @@
           wall-country?
           RIVER-WIDTH
           chunk-mesh-data
+          terrain-surface-data
           chunk-grass
           hash2
           value-noise
@@ -40,6 +41,7 @@
   (import (scheme base)
           (scheme inexact)
           (scheme python)
+          (srfi 69)
           (only random Random)
           (only (world state) state-set! state-ref))
   (begin
@@ -1003,6 +1005,122 @@
                           (and wet? (list WATER-VERTICES water-colors))
                           colors)))
           (if cave (append data (list cave-data)) data))))
+
+    ;; The fine noise grid shares lattice work between samples. Shape only
+    ;; the heights touched by a refined edge or its normal, reusing the
+    ;; original heights at whole-cell positions.
+    (define (refinement-heights ox oz step side coarse pause)
+      (let* ((x0 (- ox step)) (z0 (- oz step)) (count (* side side))
+             (cache (make-vector count #f)) (noise (make-vector count 0.0))
+             (biomes (biome-grid x0 z0 step side))
+             (desert (car biomes)) (dry (cadr biomes)) (snowy (list-ref biomes 2))
+             (features (feature-grid x0 z0 step side)))
+        (noise-grid! noise x0 z0 step side pause)
+        (do ((j 0 (+ j 1))) ((= j VERTS))
+          (do ((i 0 (+ i 1))) ((= i VERTS))
+            (vector-set! cache (+ 1 (* 2 i) (* side (+ 1 (* 2 j))))
+                         (vector-ref coarse (+ 1 (* 3 (+ i (* VERTS j))))))))
+        (lambda (k)
+          (or (vector-ref cache k)
+              (let* ((d (vector-ref desert k)) (g (vector-ref dry k))
+                     (h (shape-land (biome-height (vector-ref noise k) d g (vector-ref snowy k)
+                                                  (+ x0 (* step (remainder k side)))
+                                                  (+ z0 (* step (quotient k side))))
+                                    (vector-ref features k) d g)))
+                (vector-set! cache k h)
+                h)))))
+
+    ;; Half-meter samples on steep edges, for drawing only. Edge decisions
+    ;; depend on their endpoints so neighbors agree. Cave geometry stays put;
+    ;; only its untouched heightfield edges can be refined.
+    (define (terrain-surface-data ox oz data pause)
+      (let* ((cave (and (> (length data) 5) (list-ref data 5)))
+             (source (if cave cave
+                         (list (car data) (cadr data) (list-ref data 4)
+                               (make-vector (* VERTS VERTS 2) 0.0) (list-ref data 2) '())))
+             (vs (vector-copy (car source))) (ns (vector-copy (cadr source)))
+             (cs (vector-copy (list-ref source 2))) (uv (vector-copy (list-ref source 3)))
+             (ts (list-ref source 4)) (out (vector)) (edges (make-hash-table))
+             ;; Decorations are appended after the ground and cave surface.
+             ;; They cannot contain heightfield edges and need no scanning.
+             (n (if cave
+                    (let scan ((i 0))
+                      (if (or (= (* i 3) (vector-length vs))
+                              (>= (vector-ref uv (+ (* 2 i) 1)) 2.0))
+                          i (scan (+ i 1))))
+                    (* VERTS VERTS)))
+             (tri-end (if cave
+                          (let scan ((i 0))
+                            (if (or (= i (vector-length ts)) (>= (vector-ref ts i) n))
+                                i (scan (+ i 3))))
+                          (vector-length ts)))
+             (fine-side (+ (* 2 CHUNK-RES) 3))
+             (half-cell (* CELL 0.5))
+             (grid (make-vector n #f)) (steep (make-vector n #f))
+             (changed? #f) (steep? #f) (heights #f))
+        (define (tri a b c) (call-method out 'extend (vector a b c)))
+        ;; The coarse vertices carry their grid coordinates. Adding two of
+        ;; these offsets locates their midpoint on the half-cell grid.
+        (define (mark! i ix iz)
+          (vector-set! grid i (+ ix (* iz fine-side)))
+          (when (< (vector-ref ns (+ (* 3 i) 1)) 0.85)
+            (vector-set! steep i #t)
+            (set! steep? #t)))
+        (define (midpoint a b)
+          (and (or (vector-ref steep a) (vector-ref steep b))
+               (vector-ref grid a) (vector-ref grid b)
+               (let* ((k (+ 1 fine-side (vector-ref grid a) (vector-ref grid b)))
+                      ;; Cave seams may duplicate positions with different UVs.
+                      (key (if cave (+ (min a b) (* n (max a b))) k))
+                      (known (hash-table-ref/default edges key #f)))
+                 (or known
+                     (let* ((x (* half-cell (- (remainder k fine-side) 1)))
+                            (z (* half-cell (- (quotient k fine-side) 1)))
+                            (h (heights k))
+                            (gx (- (heights (+ k 1)) (heights (- k 1))))
+                            (gz (- (heights (+ k fine-side)) (heights (- k fine-side))))
+                            (inv (/ 1.0 (sqrt (+ (* gx gx) (* CELL CELL) (* gz gz)))))
+                            (v (quotient (vector-length vs) 3)))
+                       (call-method vs 'extend (vector x h z))
+                       (call-method ns 'extend (vector (* (- gx) inv) (* CELL inv) (* (- gz) inv)))
+                       (do ((k 0 (+ k 1))) ((= k 4))
+                         (call-method cs 'append (* 0.5 (+ (vector-ref cs (+ (* 4 a) k))
+                                                           (vector-ref cs (+ (* 4 b) k))))))
+                       (do ((k 0 (+ k 1))) ((= k 2))
+                         (call-method uv 'append (* 0.5 (+ (vector-ref uv (+ (* 2 a) k))
+                                                           (vector-ref uv (+ (* 2 b) k))))))
+                       (set! changed? #t)
+                       (hash-table-set! edges key v)
+                       v)))))
+        (if cave
+            (do ((i 0 (+ i 1))) ((= i n))
+              (let* ((x (/ (vector-ref vs (* 3 i)) CELL)) (z (/ (vector-ref vs (+ 2 (* 3 i))) CELL))
+                     (ix (exact (round x))) (iz (exact (round z))))
+                (when (and (< (abs (- x ix)) 1e-9) (< (abs (- z iz)) 1e-9)
+                           (<= 0 ix CHUNK-RES) (<= 0 iz CHUNK-RES)
+                           (< (abs (- (vector-ref vs (+ 1 (* 3 i)))
+                                      (vector-ref (car data) (+ 1 (* 3 (+ ix (* VERTS iz))))))) 1e-6))
+                  (mark! i ix iz))))
+            (do ((j 0 (+ j 1))) ((= j VERTS))
+              (do ((i 0 (+ i 1))) ((= i VERTS))
+                (mark! (+ i (* j VERTS)) i j))))
+        (when steep?
+         (set! heights (refinement-heights ox oz half-cell fine-side (car data) pause))
+         (do ((i 0 (+ i 3))) ((= i tri-end))
+          (let* ((a (vector-ref ts i)) (b (vector-ref ts (+ i 1))) (c (vector-ref ts (+ i 2)))
+                 (ab (midpoint a b)) (bc (midpoint b c)) (ca (midpoint c a)))
+            (cond
+              ((and ab bc ca) (tri a ab ca) (tri ab b bc) (tri ca bc c) (tri ab bc ca))
+              ((and ab bc) (tri b bc ab) (tri a ab c) (tri ab bc c))
+              ((and ab ca) (tri a ab ca) (tri ab b c) (tri ab c ca))
+              ((and bc ca) (tri c ca bc) (tri a b ca) (tri b bc ca))
+              (ab (tri a ab c) (tri ab b c))
+              (bc (tri a b bc) (tri a bc c))
+              (ca (tri a b ca) (tri b c ca))
+              (else (tri a b c))))
+          (when (= (modulo i 192) 0) (pause))))
+        (when changed? (call-method out 'extend (vector-copy ts tri-end)))
+        (if changed? (list vs ns cs uv out (list-ref source 5)) cave)))
 
     ;; Runs on every load, including hot reloads: restores the current seed.
     (set-world-seed! (state-ref 'seed))))

@@ -21,6 +21,7 @@
          "test_game.scm"
          "test_sounds.scm"
          "test_caves.scm"
-         "test_flashlight.scm")
+         "test_flashlight.scm"
+         "test_precipitation.scm")
 (test-end "world")
 (sys-exit (test-exit-code))

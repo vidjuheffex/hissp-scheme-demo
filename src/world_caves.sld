@@ -840,7 +840,10 @@
     ;; Rings run bottom to top. The tips and buried ends are capped so the
     ;; additional rock is closed under the same winding rule as the cave.
     (define (dripstone! kind x z lo hi radius rand vertex! triangles)
-      (let* ((sides (+ (if (< radius 0.18) 5 8) (fast-floor (* 4 (rand 2)))))
+      (let* ((height (- hi lo))
+             ;; Slender tips need fewer sides than broad, fluted roots.
+             (sides (+ (max 12 (exact (ceiling (/ (* 72.0 radius) (max height (* 2.2 radius))))))
+                       (fast-floor (* 2 (rand 2)))))
              (phase (* 2.0 PI (rand 3))) (angle (* 2.0 PI (rand 4)))
              (ca (cos angle)) (sa (sin angle))
              (blade (if (< (rand 5) 0.24) 0.36 (+ 0.62 (* 0.38 (rand 5)))))
@@ -850,20 +853,19 @@
              (flutes (+ 3 (fast-floor (* 3 (rand 9)))))
              (terraced? (and (eq? kind 'standing) (< (rand 19) 0.52)))
              (waist (+ 0.24 (* 0.48 (rand 10))))
-             (rings (cond (terraced? 10) ((< radius 0.18) 4) (else 6)))
-             (directions (make-vector sides #f)) (start #f))
-        (define (tri a b c) (call-method triangles 'extend (list a b c)))
+             (rings (if terraced? 28 12))
+             (directions (make-vector sides #f)) (start #f)
+             (ends (vector (make-vector sides #f) (make-vector sides #f))))
+        (define (tri a b c) (call-method triangles 'extend (vector a b c)))
         (do ((i 0 (+ i 1))) ((= i sides))
           (let* ((a (* 2.0 PI (/ i sides 1.0))) (c (cos a)) (s (sin a)))
             (vector-set! directions i
-              (vector c s (+ (* flutes a) phase) (* 0.09 (sin (+ (* 2 a) phase)))
-                      (+ (* blade c ca) (* s sa)) (- (* s ca) (* blade c sa))))))
+              (vector c s (+ (* flutes a) phase) (* 0.09 (sin (+ (* 2 a) phase)))))))
         (do ((j 0 (+ j 1))) ((> j rings))
-          (let* ((t (/ j rings 1.0))
+          (let* ((t (* 0.5 (- 1.0 (cos (* PI (/ j rings 1.0))))))
                  (u (if (eq? kind 'hanging) t (- 1.0 t)))
-                 (slope (cond ((eq? kind 'column) (* 1.8 (- waist t)))
-                              ((eq? kind 'standing) 1.0) (else -1.0)))
-                 (width (* radius (if (and terraced? (odd? j)) 1.34 1.0)
+                 (y (lerp lo hi t)) (offset (* bend (sin (* PI t))))
+                 (width (* radius (if terraced? (+ 1.0 (* 0.17 (- 1.0 (cos (* 10.0 PI t))))) 1.0)
                            (if (eq? kind 'column)
                                (+ 0.27 (* 0.78 (expt (abs (/ (- t waist)
                                    (if (< t waist) waist (- 1.0 waist)))) 1.7)))
@@ -872,23 +874,32 @@
             (do ((i 0 (+ i 1))) ((= i sides))
               (let* ((d (vector-ref directions i))
                      (lobe (+ 1.0 (* 0.16 (cos (+ (vector-ref d 2) (* 0.8 t)))) (vector-ref d 3)))
-                     (dx (+ (* width lobe (vector-ref d 0)) (* bend (sin (* PI t)))))
+                     (dx (+ (* width lobe (vector-ref d 0)) offset))
                      (dz (* width lobe blade (vector-ref d 1)))
-                     (v (vertex! (+ x (* dx ca) (* dz sa)) (lerp lo hi t)
-                                 (+ z (* dz ca) (* -1.0 dx sa)) mineral
-                                 (unit (list (vector-ref d 4) (* slope blade (min 0.4 (/ radius (- hi lo))))
-                                             (vector-ref d 5))))))
+                     (px (+ x (* dx ca) (* dz sa))) (pz (+ z (* dz ca) (* -1.0 dx sa)))
+                     ;; The completed triangle fan supplies the side normal.
+                     (v (vertex! px y pz mineral '#(0.0 1.0 0.0))))
                 (unless start (set! start v))
+                (when (or (= j 0) (= j rings))
+                  (vector-set! (vector-ref ends (if (= j 0) 0 1)) i (vector px y pz)))
                 (when (> j 0)
                   (let* ((next (+ start (* j sides) (modulo (+ i 1) sides)))
                          (bottom (- v sides)) (adj (- next sides)))
                     (tri bottom adj v) (tri adj next v)))))))
+        ;; Caps meet the sides at a hard edge. Sharing their lighting
+        ;; normals folds the shade on the short, flared roots.
         (let ((bottom (vertex! x lo z mineral '(0 -1 0))) (top (vertex! x hi z mineral '(0 1 0)))
-              (last (+ start (* rings sides))))
+              (caps (vector (make-vector sides 0) (make-vector sides 0))))
+          (do ((end 0 (+ end 1))) ((= end 2))
+            (do ((i 0 (+ i 1))) ((= i sides))
+              (let ((p (vector-ref (vector-ref ends end) i)))
+                (vector-set! (vector-ref caps end) i
+                  (vertex! (vector-ref p 0) (vector-ref p 1) (vector-ref p 2) mineral
+                           (if (= end 0) '(0 -1 0) '(0 1 0)))))))
           (do ((i 0 (+ i 1))) ((= i sides))
             (let ((next (modulo (+ i 1) sides)))
-              (tri bottom (+ start next) (+ start i))
-              (tri top (+ last i) (+ last next)))))))
+              (tri bottom (vector-ref (vector-ref caps 0) next) (vector-ref (vector-ref caps 0) i))
+              (tri top (vector-ref (vector-ref caps 1) i) (vector-ref (vector-ref caps 1) next)))))))
 
     ;; A level water surface extends into the banks. Its bottom is buried
     ;; below the basin, keeping the water mesh closed for chunk welding.
@@ -1083,7 +1094,7 @@
                 (pause)))))
         (define (add-vertex! x y z normal color uv)
           (let ((v (quotient (vector-length vertices) 3)))
-            (call-method vertices 'extend (list (- x ox) y (- z oz)))
+            (call-method vertices 'extend (vector (- x ox) y (- z oz)))
             (call-method normals-out 'extend normal)
             (call-method colors-out 'extend color)
             (call-method uvs 'extend uv)
@@ -1319,13 +1330,54 @@
               (when (= (hash-table-ref tri-count key) 1)
                 (call-method triangles 'extend (list a b c)))))
           (shade-by-faces! vertices normals-out triangles face-shaded)
-          (let ((bodies (decorate-cave! ox oz ctx caved ground ny ylo value-at
+          (let* ((decoration-start (quotient (vector-length vertices) 3))
+                 (decoration-triangles (vector-length triangles))
+                 (bodies (decorate-cave! ox oz ctx caved ground ny ylo value-at
                            (lambda (x z depth)
-                             (let ((color (terrain-mix colors 4 (- x ox) (- z oz))))
+                             (let ((color (list->vector (terrain-mix colors 4 (- x ox) (- z oz)))))
                                (lambda (x y z material normal)
-                                 (add-vertex! x y z normal color (list depth material)))))
+                                 (add-vertex! x y z normal color (vector depth material)))))
                            triangles pause)))
+            ;; Flutes, bends and terraces change the surface slope. Shade
+            ;; their actual faces rather than the unfluted cone's normal.
+            (shade-decorations! vertices normals-out triangles decoration-start decoration-triangles pause)
             (list vertices normals-out colors-out uvs triangles bodies)))))
+
+    ;; Decorations occupy a contiguous range, so dense sums avoid a hash
+    ;; lookup at every triangle corner. Each face contributes a unit normal:
+    ;; a broad band must not turn a short neighboring band's shade inward.
+    ;; Yield during this work too.
+    (define (shade-decorations! vertices normals triangles first first-triangle pause)
+      (let* ((base (* 3 first)) (sums (make-vector (- (vector-length vertices) base) 0.0)))
+        (define (add! k x y z)
+          (vector-set! sums k (+ (vector-ref sums k) x))
+          (vector-set! sums (+ k 1) (+ (vector-ref sums (+ k 1)) y))
+          (vector-set! sums (+ k 2) (+ (vector-ref sums (+ k 2)) z)))
+        (do ((t first-triangle (+ t 3))) ((= t (vector-length triangles)))
+          (let* ((a (* 3 (vector-ref triangles t)))
+                 (b (* 3 (vector-ref triangles (+ t 1))))
+                 (c (* 3 (vector-ref triangles (+ t 2))))
+                 (ux (- (vector-ref vertices b) (vector-ref vertices a)))
+                 (uy (- (vector-ref vertices (+ b 1)) (vector-ref vertices (+ a 1))))
+                 (uz (- (vector-ref vertices (+ b 2)) (vector-ref vertices (+ a 2))))
+                 (wx (- (vector-ref vertices c) (vector-ref vertices a)))
+                 (wy (- (vector-ref vertices (+ c 1)) (vector-ref vertices (+ a 1))))
+                 (wz (- (vector-ref vertices (+ c 2)) (vector-ref vertices (+ a 2))))
+                 (nx (- (* wy uz) (* wz uy))) (ny (- (* wz ux) (* wx uz))) (nz (- (* wx uy) (* wy ux)))
+                 (inv (/ 1.0 (fast-max 1e-12 (fast-sqrt (+ (* nx nx) (* ny ny) (* nz nz))))))
+                 (x (* nx inv)) (y (* ny inv)) (z (* nz inv)))
+            (add! (- a base) x y z)
+            (add! (- b base) x y z)
+            (add! (- c base) x y z))
+          (when (= (modulo (- t first-triangle) 192) 0) (pause)))
+        (do ((k 0 (+ k 3))) ((= k (vector-length sums)))
+          (let* ((x (vector-ref sums k)) (y (vector-ref sums (+ k 1))) (z (vector-ref sums (+ k 2)))
+                 (len (fast-sqrt (+ (* x x) (* y y) (* z z)))))
+            (when (> len 1e-9)
+              (vector-set! normals (+ base k) (/ x len))
+              (vector-set! normals (+ base k 1) (/ y len))
+              (vector-set! normals (+ base k 2) (/ z len))))
+          (when (= (modulo k 192) 0) (pause)))))
 
     ;; Whether the a-c diagonal fixes a folded terrain-transition quad.
     (define (split-ac? vertices a b c d)

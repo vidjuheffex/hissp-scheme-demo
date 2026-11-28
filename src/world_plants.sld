@@ -709,10 +709,10 @@
                           (iota (call-method rng 'randint
                                              (car (get 'cuts)) (cadr (get 'cuts)))))))
           (set-material! b MAT-ROCK)
-          (band! b 7 12
+          (band! b 16 32
                  (lambda (j i)
-                   (let* ((phi (- (* PI (/ j 7.0)) (/ PI 2.0)))
-                          (theta (* -2.0 PI (/ i 12.0)))
+                   (let* ((phi (- (* PI (/ j 16.0)) (/ PI 2.0)))
+                          (theta (* -2.0 PI (/ i 32.0)))
                           (d (list (* (cos phi) (cos theta)) (sin phi) (* (cos phi) (sin theta))))
                           (lump (+ 1.0 (* lumps (sin (+ (* 3.3 (x-of d)) a))
                                           (sin (+ (* 2.9 (z-of d)) (* 2.1 (y-of d)) c)))))

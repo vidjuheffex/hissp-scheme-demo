@@ -193,9 +193,11 @@ void main() {
                      * ambient_color;
     // Daylight reaches into a cave from its mouth and fades with depth.
     float daylight = 1.0 - cave.x;
-    vec3 light = (sky_ambient
-                  + p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light))
-                 * daylight * daylight;
+    vec3 light = sky_ambient;
+    if (daylight > 0.0 && ndl > 0.0) {
+        light += p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light);
+    }
+    light *= daylight * daylight;
     light += flashlight_light(view_pos, view_normal);
     vec3 color = albedo * light;
     if (cave.y >= 4.0) {

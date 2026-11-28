@@ -41,8 +41,10 @@ float flashlight_beam(vec3 view_pos) {
     if (flashlight <= 0.0) return 0.0;
     vec3 ray = view_pos - flashlight_source.position.xyz;
     float dist = max(length(ray), 1e-4);
+    if (dist >= flashlight_reach) return 0.0;
     vec3 axis = normalize(flashlight_source.spotDirection);
     float alignment = dot(ray / dist, axis);
+    if (alignment <= flashlight_spill_cos) return 0.0;
     float cone = smoothstep(cos(radians(FLASHLIGHT_OUTER_ANGLE)),
                             cos(radians(FLASHLIGHT_INNER_ANGLE)), alignment);
     // The reflector's dim spill reveals nearby rock beyond the main spot,

@@ -41,7 +41,7 @@
 ;;   (reload!)                     force-reload everything
 
 (define-library (world game)
-  (export run setup! cave-outdoor-gain flashlight-strength set-flashlight! make-flashlight!)
+  (export run setup! cave-outdoor-gain flashlight-strength set-flashlight! make-flashlight! blow-precipitation!)
   (import (scheme base)
     (scheme inexact)
     (scheme python)
@@ -68,8 +68,8 @@
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
     (only pathlib Path)
-    (only panda3d.core Filename OmniBoundingVolume PerspectiveLens Point3 SamplerState
-          Spotlight Texture TexturePool)
+    (only panda3d.core AntialiasAttrib Filename OmniBoundingVolume PerspectiveLens Point3 SamplerState
+          Spotlight Texture TexturePool TransparencyAttrib)
     (rename (only panda3d.core loadPrcFileData)
             (loadPrcFileData load-prc-file-data)))
   (begin
@@ -231,17 +231,17 @@
              (oz (* cz CHUNK-SIZE))
              (triangles (list-ref data 2))
              (water (list-ref data 3))
-             ;; A chunk a cave reaches draws the cave's mesh of its ground.
-             (cave (list-ref data 6))
+             ;; Caves and refined heightfields provide a drawing mesh.
+             (drawing (list-ref data 6))
              (terrain (call/kw Entity
                                (parent (state-ref 'world-root)
-                                model (if cave
+                                model (if drawing
                                           (call/kw Mesh
-                                                   (vertices (car cave)
-                                                    normals (cadr cave)
-                                                    colors (list-ref cave 2)
-                                                    uvs (list-ref cave 3)
-                                                    triangles (list-ref cave 4)))
+                                                   (vertices (car drawing)
+                                                    normals (cadr drawing)
+                                                    colors (list-ref drawing 2)
+                                                    uvs (list-ref drawing 3)
+                                                    triangles (list-ref drawing 4)))
                                           (call/kw Mesh
                                                    (vertices (car data)
                                                     normals (cadr data)
@@ -249,6 +249,9 @@
                                                     triangles triangles)))
                                 position (make-tuple ox 0 oz)
                                 shader (state-ref 'terrain-shader)))))
+        ;; Ursina assigns dual-pass transparency to every model. These
+        ;; shaders produce opaque pixels, including grass after its cutout.
+        (call-method (attribute-ref terrain 'model) 'set-transparency (attribute-ref TransparencyAttrib 'M-none))
         (when water
           (let ((surface (call/kw Entity
                                   (parent terrain
@@ -262,13 +265,13 @@
             (call-method (attribute-ref surface 'model) 'set-transparency #t)
             ;; Mask 1 is the shadow camera; water shouldn't shade the seabed.
             (call-method surface 'hide 1)))
-        ;; The heightfield's (vertices colors), which grass grows from: a
-        ;; cave chunk's model is the cave mesh.
+        ;; Grass grows from the original heightfield, including chunks
+        ;; whose drawing mesh has caves or additional samples.
         (attribute-set! terrain 'ground (list (car data) (list-ref data 4)))
         (let ((plants (list-ref data 5)))
           ;; Tree trunks, as world (x z radius), for `keep-out-of-trunks!`.
           (attribute-set! terrain 'trunks
-            (append (if cave (list-ref cave 5) '()) (if plants (list-ref plants 5) '())))
+            (append (if drawing (list-ref drawing 5) '()) (if plants (list-ref plants 5) '())))
           (when plants
             (let ((mesh (call/kw Mesh
                                  (vertices (car plants)
@@ -276,20 +279,20 @@
                                   colors (list-ref plants 2)
                                   triangles (list-ref plants 3)
                                   uvs (list-ref plants 4)))))
-              ;; The mesh is on the GPU now. Ursina keeps the source lists,
-              ;; millions of entries across a desert, and Python's full
-              ;; garbage collection pass walks them all: a 40 ms hitch.
+              ;; The plant batch only needs its GPU copy after upload.
               (attribute-set! mesh 'vertices (vector))
               (attribute-set! mesh 'normals (vector))
               (attribute-set! mesh 'colors (vector))
               (attribute-set! mesh 'triangles (vector))
               (attribute-set! mesh 'uvs (vector))
-              (call/kw Entity
-                       (parent terrain
-                        name "plants"
-                        model mesh
-                        shader (state-ref 'plant-shader)
-                        double_sided #t)))))
+              (let ((plant (call/kw Entity
+                                    (parent terrain
+                                     name "plants"
+                                     model mesh
+                                     shader (state-ref 'plant-shader)
+                                     double_sided #t))))
+                (call-method (attribute-ref plant 'model) 'set-transparency
+                             (attribute-ref TransparencyAttrib 'M-none))))))
         terrain))
 
     ;; Add the clump mesh from `chunk-grass` to a chunk's terrain entity.
@@ -305,6 +308,7 @@
                                               triangles (list-ref grass 4)))
                               shader (state-ref 'grass-shader)
                               double_sided #t))))
+        (call-method (attribute-ref clumps 'model) 'set-transparency (attribute-ref TransparencyAttrib 'M-none))
         ;; Too fine for the shadow map; it would only add speckle.
         (call-method clumps 'hide 1)
         (attribute-set! clumps 'enabled show?)))
@@ -314,7 +318,15 @@
     (define PLANT-CLEARING 8.0)
     (define GRASS-CLEARING 3.0)
 
-    ;; Terrain data with the chunk's plants at index 5 and its caves at 6.
+    ;; Ursina can copy these buffers directly into Panda's vertex arrays.
+    ;; Pack static meshes on the worker, leaving collision lists untouched.
+    (define (pack-mesh mesh formats)
+      (cond ((not mesh) #f)
+            ((null? formats) mesh)
+            (else (cons (array (car formats) (car mesh))
+                        (pack-mesh (cdr mesh) (cdr formats))))))
+
+    ;; Terrain data with plants at index 5 and an optional drawing mesh at 6.
     (define (generate-chunk cx cz pause)
       (let* ((ox (* cx CHUNK-SIZE))
              (oz (* cz CHUNK-SIZE))
@@ -322,20 +334,30 @@
                                     (lambda (heights colors normals)
                                       (cave-chunk-data ox oz heights colors normals pause)))))
         (list (car data) (cadr data) (list-ref data 2) (list-ref data 3) (list-ref data 4)
-              (chunk-plants ox oz (car data) (list-ref data 4) pause
-                            (mouth-clearing ox oz PLANT-CLEARING 6.0))
-              (list-ref data 5))))
+              (pack-mesh (chunk-plants ox oz (car data) (list-ref data 4) pause
+                                       (mouth-clearing ox oz PLANT-CLEARING 6.0))
+                         '("f" "f" "f" "I" "f"))
+              (pack-mesh (terrain-surface-data ox oz data pause)
+                         '("f" "f" "f" "f" "I")))))
 
     ;; `sources` is the chunk's terrain (vertices colors).
     (define (generate-grass cx cz sources pause)
       (let ((ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE)))
-        (chunk-grass ox oz (car sources) (cadr sources) pause
-                     (mouth-clearing ox oz GRASS-CLEARING 3.5))))
+        (pack-mesh (chunk-grass ox oz (car sources) (cadr sources) pause
+                                (mouth-clearing ox oz GRASS-CLEARING 3.5))
+                   '("f" "f" "f" "f" "I"))))
 
     (define (no-pause) #f)
 
+    ;; Only the main thread advances the ring scan. A new center or generation
+    ;; starts it over. In-flight jobs already cover the offsets we've passed.
+    (define request-centre #f)
+    (define remaining-offsets '())
+    (define unload-centre #f)
+
     ;; Generate and build chunks right away on the main thread (used at spawn).
     (define (load-now! pcx pcz radius)
+      (set! unload-centre #f)
       (for-each
         (lambda (offset)
           (when (<= (max (abs (car offset)) (abs (cadr offset))) radius)
@@ -351,18 +373,21 @@
 
     ;; Destroy chunks further than the view radius (plus one, for hysteresis).
     (define (unload-far! pcx pcz)
-      (let ((chunks (state-ref 'chunks)))
-        (for-each
-          (lambda (key)
-            (when (out-of-range? key pcx pcz)
-              (destroy (hash-table-ref chunks key))
-              (hash-table-delete! chunks key)
-              (hash-table-delete! (state-ref 'grass-jobs) key)))
-          (hash-table-keys chunks))))
+      (let ((centre (list pcx pcz)) (chunks (state-ref 'chunks)))
+        (unless (equal? centre unload-centre)
+          (set! unload-centre centre)
+          (for-each
+            (lambda (key)
+              (when (out-of-range? key pcx pcz)
+                (destroy (hash-table-ref chunks key))
+                (hash-table-delete! chunks key)
+                (hash-table-delete! (state-ref 'grass-jobs) key)))
+            (hash-table-keys chunks)))))
 
     ;; Drop every chunk and any pending work. Used after terrain edits: the
     ;; generation counter makes results from the old terrain get discarded.
     (define (regenerate!)
+      (set! request-centre #f)
       (let ((chunks (state-ref 'chunks)))
         (for-each
           (lambda (key)
@@ -486,16 +511,20 @@
 
     ;; Ask the worker for the nearest missing chunks, up to the in-flight cap.
     (define (request-missing! pcx pcz)
-      (let ((chunks (state-ref 'chunks)) (in-flight (state-ref 'in-flight)))
-        (let loop ((offsets OFFSETS))
-          (when (and (pair? offsets)
+      (let ((centre (list pcx pcz)) (chunks (state-ref 'chunks)) (in-flight (state-ref 'in-flight)))
+        (unless (equal? centre request-centre)
+          (set! request-centre centre)
+          (set! remaining-offsets OFFSETS))
+        (let loop ()
+          (when (and (pair? remaining-offsets)
                      (< (hash-table-size in-flight) MAX-JOBS-IN-FLIGHT))
-            (let ((key (list (+ pcx (car (car offsets)))
-                             (+ pcz (cadr (car offsets))))))
+            (let* ((offset (car remaining-offsets))
+                   (key (list (+ pcx (car offset)) (+ pcz (cadr offset)))))
               (unless (or (hash-table-exists? chunks key)
                           (hash-table-exists? in-flight key))
                 (request-chunk! key))
-              (loop (cdr offsets)))))))
+              (set! remaining-offsets (cdr remaining-offsets))
+              (loop))))))
 
     (define (take-finished!)
       (with-lock
@@ -626,6 +655,7 @@
         (call-method precipitation 'set-shader-input "box" (rgb PRECIP-BOX))
         (call-method precipitation 'set-shader-input "rain_wind" (make-tuple 0.0 0.0))
         (call-method precipitation 'set-shader-input "rain_drift" (make-tuple 0.0 0.0))
+        (call-method precipitation 'set-shader-input "fall_distance" 0.0)
         (call-method precipitation 'set-shader-input "eye_velocity" (make-tuple 0.0 0.0 0.0))
         (state-set! 'sky (list sky clouds precipitation))))
 
@@ -1539,6 +1569,12 @@
     (define (blow-precipitation! precipitation wind dir snow dt)
       (let* ((push (* wind (+ RAIN-PUSH (* (- SNOW-PUSH RAIN-PUSH) snow))))
              (velocity (map (lambda (w) (* w push)) dir))
+             ;; Speed changes only apply to the next step. All nine particle
+             ;; speed bands wrap by whole box heights after 20 heights.
+             (period (* 20.0 (cadr PRECIP-BOX)))
+             (distance (+ (hash-table-ref/default state 'precip-fall 0.0)
+                          (* (max dt 0.0) (+ 9.0 (* snow (- 1.2 9.0))))))
+             (fall (- distance (* period (floor (/ distance period)))))
              (drift (map (lambda (d v size)
                            (let ((x (+ d (* v dt))))
                              (- x (* size (floor (/ x size))))))
@@ -1546,6 +1582,8 @@
                          velocity
                          (list (car PRECIP-BOX) (list-ref PRECIP-BOX 2)))))
         (state-set! 'precip-drift drift)
+        (state-set! 'precip-fall fall)
+        (call-method precipitation 'set-shader-input "fall_distance" fall)
         (call-method precipitation 'set-shader-input "rain_wind" (apply make-tuple velocity))
         (call-method precipitation 'set-shader-input "rain_drift" (apply make-tuple drift))))
 
@@ -1733,9 +1771,11 @@
 
     ;; Push the player out of any tree trunk in their chunk or those around.
     (define (keep-out-of-trunks! player)
-      (let ((chunks (state-ref 'chunks))
-            (cx (world->chunk (attribute-ref player 'x)))
-            (cz (world->chunk (attribute-ref player 'z))))
+      (let* ((chunks (state-ref 'chunks))
+             (px (attribute-ref player 'x)) (pz (attribute-ref player 'z))
+             (feet (attribute-ref player 'y))
+             (cx (world->chunk px))
+             (cz (world->chunk pz)))
         (for-each
           (lambda (dx)
             (for-each
@@ -1744,18 +1784,20 @@
                   (when terrain
                     (for-each
                       (lambda (trunk)
-                        (let* ((ox (- (attribute-ref player 'x) (car trunk)))
-                               (oz (- (attribute-ref player 'z) (cadr trunk)))
+                        (let* ((ox (- px (car trunk)))
+                               (oz (- pz (cadr trunk)))
                                (reach (+ PLAYER-RADIUS (list-ref trunk 2)))
-                               (d (sqrt (+ (* ox ox) (* oz oz)))))
-                          (when (and (< d reach) (> d 1e-6)
-                                     (let ((feet (attribute-ref player 'y)))
-                                       (if (pair? (list-tail trunk 3))
-                                           (and (< feet (list-ref trunk 4))
-                                                (> (+ feet EYE-HEIGHT) (list-ref trunk 3)))
-                                           (> feet (- (terrain-height (car trunk) (cadr trunk)) 2.0)))))
-                            (attribute-set! player 'x (+ (car trunk) (* ox (/ reach d))))
-                            (attribute-set! player 'z (+ (cadr trunk) (* oz (/ reach d)))))))
+                               (d2 (+ (* ox ox) (* oz oz))))
+                          (when (and (< d2 (* reach reach)) (> d2 1e-12)
+                                     (if (pair? (list-tail trunk 3))
+                                         (and (< feet (list-ref trunk 4))
+                                              (> (+ feet EYE-HEIGHT) (list-ref trunk 3)))
+                                         (> feet (- (terrain-height (car trunk) (cadr trunk)) 2.0))))
+                            (let ((push (/ reach (sqrt d2))))
+                              (set! px (+ (car trunk) (* ox push)))
+                              (set! pz (+ (cadr trunk) (* oz push)))
+                              (attribute-set! player 'x px)
+                              (attribute-set! player 'z pz)))))
                       (attribute-ref terrain 'trunks)))))
               (list -1 0 1)))
           (list -1 0 1))))
@@ -2155,7 +2197,7 @@
     ;; and fix up every shader's source right before Ursina compiles it.
     ;; Must run before `(Ursina)` opens the window.
     (define (use-core-gl!)
-      (load-prc-file-data "" "gl-version 3 2")
+      (load-prc-file-data "" "gl-version 3 2\nframebuffer-multisample true\nmultisamples 4")
       (let ((compile (attribute-ref Shader 'compile)))
         (attribute-set!
           Shader 'compile
@@ -2391,6 +2433,7 @@
         (attribute-set! application 'print_info #f)
 
         (state-set! 'world-root (Entity))
+        (call-method (state-ref 'world-root) 'set-antialias (attribute-ref AntialiasAttrib 'M-multisample))
         (reload-shaders!)
         (set-input! "grass_tex" (load-tiling-texture "grass.png"))
         (set-input! "rock_tex" (load-tiling-texture "rock.png"))

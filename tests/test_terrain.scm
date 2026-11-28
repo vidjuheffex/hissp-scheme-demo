@@ -1,8 +1,7 @@
 ;; (world terrain): noise, seeds, heights, biomes and chunk meshes.
 
-(import (scheme base))
+(import (scheme base) (world terrain) (only (srfi 132) list-sort))
 (include "helpers.scm")
-(import (world terrain))
 
 (test-begin "terrain")
 
@@ -153,6 +152,63 @@
 
 (test-equal "chunks meet their neighbor along x" #t (edge-mismatch (mesh 0 0) (mesh 1 0) #t))
 (test-equal "chunks meet their neighbor along z" #t (edge-mismatch (mesh 0 0) (mesh 0 1) #f))
+
+;; The render mesh samples the actual terrain more closely on steep rock.
+;; Its coarse heightfield still supplies plants, grass and cave generation.
+(define (surface cx cz)
+  (let ((m (mesh cx cz)))
+    (or (terrain-surface-data (* cx CHUNK-SIZE) (* cz CHUNK-SIZE) m no-pause)
+        (list (car m) (cadr m) (list-ref m 4) #f (list-ref m 2)))))
+
+(define canyon-surface (surface -46 -58))
+(test-assert "steep terrain gains samples between the original grid points"
+             (> (vector-length (car canyon-surface)) (* VERTS VERTS 3)))
+(test-equal "the refined terrain is a valid mesh" #t
+            (mesh-problem (car canyon-surface) 3 (list-ref canyon-surface 4)))
+(test-equal "refined terrain has unit lighting normals" #t
+            (unit-normals-problem (cadr canyon-surface)))
+(test-equal "refinement resamples the height field instead of splitting flat triangles" #t
+  (let ((vs (car canyon-surface)))
+    (let loop ((i 0))
+      (or (= i (vector-length vs))
+          (and (< (abs (- (vector-ref vs (+ i 1))
+                         (terrain-height (+ -1472 (vector-ref vs i))
+                                         (+ -1856 (vector-ref vs (+ i 2)))))) 1e-6)
+               (loop (+ i 3)))))))
+(test-equal "steep triangles have at most half-meter edges across the ground" #t
+  (let ((vs (car canyon-surface)) (ts (list-ref canyon-surface 4)) (ns (cadr canyon-surface)))
+    (let loop ((i 0))
+      (or (= i (vector-length ts))
+          (let ((a (vector-ref ts i)) (b (vector-ref ts (+ i 1))) (c (vector-ref ts (+ i 2))))
+            (and
+              (or (>= (min (vector-ref ns (+ (* 3 a) 1)) (vector-ref ns (+ (* 3 b) 1))
+                           (vector-ref ns (+ (* 3 c) 1))) 0.55)
+                  (let edges ((pairs (list (cons a b) (cons b c) (cons c a))))
+                    (or (null? pairs)
+                        (and (<= (max (abs (- (vector-ref vs (* 3 (caar pairs)))
+                                              (vector-ref vs (* 3 (cdar pairs)))))
+                                      (abs (- (vector-ref vs (+ (* 3 (caar pairs)) 2))
+                                              (vector-ref vs (+ (* 3 (cdar pairs)) 2))))) 0.5)
+                             (edges (cdr pairs))))))
+              (loop (+ i 3))))))))
+
+;; All boundary segments, including added samples, must agree exactly.
+(define (surface-edge m axis value)
+  (let ((vs (car m)) (out '()))
+    (do ((i 0 (+ i 3))) ((= i (vector-length vs)))
+      (when (< (abs (- (vector-ref vs (+ i axis)) value)) 1e-9)
+        (set! out (cons (list (vector-ref vs (+ i (- 2 axis)))
+                             (vector-ref vs (+ i 1))
+                             (vector-ref (cadr m) i)
+                             (vector-ref (cadr m) (+ i 1))
+                             (vector-ref (cadr m) (+ i 2))) out))))
+    (list-sort (lambda (a b) (< (car a) (car b))) out)))
+(test-equal "refined cliff chunks share every sample and normal along x"
+            (surface-edge canyon-surface 0 CHUNK-SIZE)
+            (surface-edge (surface -45 -58) 0 0))
+(test-equal "refined cliff chunks share every sample and normal along z"
+            (surface-edge canyon-surface 2 CHUNK-SIZE)
+            (surface-edge (surface -46 -57) 2 0))
 
 ;; --- grass -------------------------------------------------------------------
 
