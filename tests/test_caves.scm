@@ -1,0 +1,234 @@
+;; Cave regressions: mouths, chunk seams and walking, without a window.
+;;
+;;   uv run main.py tests/test_caves.scm
+;;
+;; Checks the caves of world seed 4242 for holes, repeated edges and
+;; reversed faces across whole blocks of chunks, then walks the player's
+;; climb and headroom rules in and out of every mouth and along each main
+;; tunnel.
+
+(import (scheme base)
+        (scheme inexact)
+        (scheme python)
+        (scheme write)
+        (srfi 64)
+        (srfi 69)
+        (rename (only sys exit) (exit sys-exit))
+        (only (world terrain) CHUNK-SIZE set-world-seed! terrain-height chunk-mesh-data)
+        (only (world caves) cave-chunk-data cave-ground cave-headroom? caves-ready-near!
+              site-cave capsule solid-field))
+
+(set-world-seed! 4242)
+
+(define SITES '((-4 3) (-3 2) (-1 -4) (0 -1) (0 3) (2 2) (3 -2) (0 4)))
+(define MAX-CLIMB 2.0)   ; as the game's: meters of rise per meter walked
+
+(define (named . parts)
+  (apply string-append
+         (map (lambda (p) (cond ((string? p) p)
+                                ((number? p) (number->string p))
+                                (else (let ((out (open-output-string))) (write p out) (get-output-string out)))))
+              parts)))
+
+(define (no-pause) #f)
+
+;; (vertices normals triangles cave?) for the chunk at (cx, cz), its cave
+;; mesh where a cave reaches it.
+(define meshes (make-hash-table))
+(define (mesh cx cz)
+  (let ((key (list cx cz)))
+    (or (hash-table-ref/default meshes key #f)
+        (let* ((ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
+               (data (chunk-mesh-data ox oz no-pause
+                                      (lambda (heights colors normals)
+                                        (cave-chunk-data ox oz heights colors normals no-pause))))
+               (cave (list-ref data 5))
+               (m (if cave
+                      (list (car cave) (cadr cave) (list-ref cave 4) #t)
+                      (list (car data) (cadr data) (list-ref data 2) #f))))
+          (hash-table-set! meshes key m)
+          m))))
+
+;; --- a mouth on the ground --------------------------------------------------
+
+(test-begin "caves")
+
+;; A tunnel whose top just meets the ground: no sheet of rock between them.
+(let ((ctx (vector (vector (capsule -2.0 19.0 0.0 4.0 19.0 0.0 2.0))
+                   (list (vector 0.0 18.0 0.0 1.0 0.0)))))
+  (for-each (lambda (y)
+              (test-assert (named "open mouth at y " y) (> (solid-field ctx 0.0 y 0.0 18.0) 0.0)))
+            '(17.98 18.0 18.02)))
+
+;; --- watertight and consistently wound ---------------------------------------
+
+(define (micro v) (+ (exact (round (* v 1e6))) 1099511627776))
+(define (whole? v) (< (abs (- v (round v))) 1e-6))
+
+;; Welds the meshes of every chunk around the cave at `site`, and an extra
+;; ring, and returns (bad-edges flipped): edges inside the block not met
+;; exactly once each way, and cave faces turned against their normals.
+(define (weld-check site)
+  (let* ((box (vector-ref (site-cave (car site) (cadr site)) 3))
+         (c0x (- (exact (floor (/ (car box) CHUNK-SIZE))) 1))
+         (c0z (- (exact (floor (/ (cadr box) CHUNK-SIZE))) 1))
+         (c1x (+ (exact (floor (/ (list-ref box 2) CHUNK-SIZE))) 1))
+         (c1z (+ (exact (floor (/ (list-ref box 3) CHUNK-SIZE))) 1))
+         (ids (make-hash-table))
+         (inside (vector))
+         (edges (make-hash-table))
+         (flipped 0))
+    (define (inside? x z)
+      (and (< (+ (* c0x CHUNK-SIZE) 2) x (- (* (+ c1x 1) CHUNK-SIZE) 2))
+           (< (+ (* c0z CHUNK-SIZE) 2) z (- (* (+ c1z 1) CHUNK-SIZE) 2))))
+    (define (point-id x y z)
+      (let ((key (+ (* (micro x) 4835703278458516698824704) (* (micro y) 2199023255552) (micro z))))
+        (or (hash-table-ref/default ids key #f)
+            (let ((id (hash-table-size ids)))
+              (hash-table-set! ids key id)
+              (call-method inside 'append (inside? x z))
+              id))))
+    (define (edge! a b)
+      (hash-table-update!/default edges (+ (* a 4294967296) b) (lambda (n) (+ n 1)) 0))
+    (do ((cx (- c0x 1) (+ cx 1))) ((> cx (+ c1x 1)))
+      (do ((cz (- c0z 1) (+ cz 1))) ((> cz (+ c1z 1)))
+        (let* ((m (mesh cx cz))
+               (vs (car m)) (ns (cadr m)) (ts (list-ref m 2))
+               (check-faces (and (list-ref m 3) (<= c0x cx c1x) (<= c0z cz c1z)))
+               (ox (* cx CHUNK-SIZE)) (oz (* cz CHUNK-SIZE))
+               (p (lambda (v k) (vector-ref vs (+ (* 3 v) k)))))
+          (do ((t 0 (+ t 3))) ((>= t (vector-length ts)))
+            (let* ((i (vector-ref ts t)) (j (vector-ref ts (+ t 1))) (k (vector-ref ts (+ t 2)))
+                   (a (point-id (+ ox (p i 0)) (p i 1) (+ oz (p i 2))))
+                   (b (point-id (+ ox (p j 0)) (p j 1) (+ oz (p j 2))))
+                   (c (point-id (+ ox (p k 0)) (p k 1) (+ oz (p k 2)))))
+              (unless (or (= a b) (= b c) (= a c))
+                (edge! a b) (edge! b c) (edge! c a)
+                ;; Faces of the plain terrain can lean against their
+                ;; smoothed normals on jagged ground; only cave faces count.
+                (when (and check-faces
+                           (not (and (whole? (p i 0)) (whole? (p i 2)) (whole? (p j 0))
+                                     (whole? (p j 2)) (whole? (p k 0)) (whole? (p k 2)))))
+                  (let* ((ux (- (p j 0) (p i 0))) (uy (- (p j 1) (p i 1))) (uz (- (p j 2) (p i 2)))
+                         (wx (- (p k 0) (p i 0))) (wy (- (p k 1) (p i 1))) (wz (- (p k 2) (p i 2)))
+                         (n (lambda (q) (+ (vector-ref ns (+ (* 3 i) q)) (vector-ref ns (+ (* 3 j) q))
+                                           (vector-ref ns (+ (* 3 k) q))))))
+                    (when (> (+ (* (- (* uy wz) (* uz wy)) (n 0))
+                                (* (- (* uz wx) (* ux wz)) (n 1))
+                                (* (- (* ux wy) (* uy wx)) (n 2)))
+                             1e-9)
+                      (set! flipped (+ flipped 1)))))))))))
+    (let ((bad 0))
+      (hash-table-walk edges
+        (lambda (key count)
+          (let ((a (quotient key 4294967296)) (b (remainder key 4294967296)))
+            (when (and (vector-ref inside a) (vector-ref inside b)
+                       (not (and (= count 1)
+                                 (= 1 (hash-table-ref/default edges (+ (* b 4294967296) a) 0)))))
+              (set! bad (+ bad 1))))))
+      (list bad flipped))))
+
+(for-each
+  (lambda (site)
+    (let ((result (weld-check site)))
+      (test-equal (named "cave " site ": open or repeated edges") 0 (car result))
+      (test-equal (named "cave " site ": reversed faces") 0 (cadr result))))
+  SITES)
+
+;; --- walking -------------------------------------------------------------------
+
+;; The floor under feet at `feet` in (x, z), as the game picks it.
+(define (floor-at x z feet)
+  (let ((h (terrain-height x z)))
+    (or (cave-ground x z feet h) h)))
+
+;; The floor if the player may step there from `feet`, `distance` away, else #f.
+(define (step x z feet distance)
+  (let* ((h (terrain-height x z))
+         (ground (or (cave-ground x z feet h) h)))
+    (and (<= ground (+ feet 0.01 (* MAX-CLIMB distance)))
+         (cave-headroom? x z ground h)
+         ground)))
+
+;; Walks through the mouth at #(x floor z dx dz), from 6 m out to 4.5 m in
+;; (`way` 1) or back out (-1), sidestepping a little where blocked. #t, or
+;; where it got stuck.
+(define (walk-mouth mouth way)
+  (let* ((mx (vector-ref mouth 0)) (my (vector-ref mouth 1)) (mz (vector-ref mouth 2))
+         (dx (vector-ref mouth 3)) (dz (vector-ref mouth 4))
+         (start (if (> way 0) -6.0 4.5))
+         (sx (+ mx (* start dx))) (sz (+ mz (* start dz))))
+    (let loop ((along start) (x sx) (z sz)
+               (feet (floor-at sx sz (+ 0.5 (if (> way 0) (terrain-height sx sz) my))))
+               (steps 0))
+      (cond ((if (> way 0) (>= along 4.5) (<= along -6.0)) #t)
+            ((= steps 50) (named "didn't get through, " along " m along"))
+            (else
+              (let* ((next (+ along (* way 0.25)))
+                     (moved (let attempt ((sides '(0.0 0.4 -0.4 0.8 -0.8 1.2 -1.2)))
+                              (and (pair? sides)
+                                   (let* ((nx (- (+ mx (* next dx)) (* (car sides) dz 0.25)))
+                                          (nz (+ mz (* next dz) (* (car sides) dx 0.25)))
+                                          (f (step nx nz feet (sqrt (+ (square (- nx x)) (square (- nz z)))))))
+                                     (if f (list nx nz f) (attempt (cdr sides))))))))
+                (if moved
+                    (loop next (car moved) (cadr moved) (list-ref moved 2) (+ steps 1))
+                    (named "blocked " along " m along"))))))))
+
+;; Follows the cave's main tunnel, its first chain of joined segments, from
+;; the mouth in. #t, or where it got stuck.
+(define (walk-tunnel cave)
+  (let* ((prims (vector-ref cave 0))
+         (path (let collect ((k 0) (out '()))
+                 (if (or (= k (vector-length prims))
+                         (not (= (vector-ref (vector-ref prims k) 0) 0))
+                         (and (> k 0)
+                              (let ((p (vector-ref prims k)) (q (vector-ref prims (- k 1))))
+                                (or (> (abs (- (vector-ref p 1) (vector-ref q 4))) 1e-6)
+                                    (> (abs (- (vector-ref p 3) (vector-ref q 6))) 1e-6)))))
+                     (reverse out)
+                     (let ((p (vector-ref prims k)))
+                       (collect (+ k 1)
+                                (cons (list (vector-ref p 4) (vector-ref p 6))
+                                      (if (= k 0) (list (list (vector-ref p 1) (vector-ref p 3))) out))))))))
+    (caves-ready-near! (car (car path)) (cadr (car path)))
+    (let segment ((targets (cdr path)) (x (car (car path))) (z (cadr (car path)))
+                  (feet (terrain-height (car (car path)) (cadr (car path)))) (n 1))
+      (if (null? targets)
+          #t
+          (let ((tx (car (car targets))) (tz (cadr (car targets))))
+            (let walk ((x x) (z z) (feet feet) (steps 0))
+              (let ((d (sqrt (+ (square (- tx x)) (square (- tz z))))))
+                (cond ((<= d 0.4) (segment (cdr targets) x z feet (+ n 1)))
+                      ((= steps 400) (named "couldn't reach segment " n))
+                      (else
+                        (let* ((ux (/ (- tx x) d)) (uz (/ (- tz z) d))
+                               (moved (let attempt ((sides '(0.0 0.5 -0.5 1.0 -1.0 1.5 -1.5 2.0 -2.0)))
+                                        (and (pair? sides)
+                                             (let* ((a (* 0.6 (car sides)))
+                                                    (nx (+ x (* 0.25 (- (* ux (cos a)) (* uz (sin a))))))
+                                                    (nz (+ z (* 0.25 (+ (* ux (sin a)) (* uz (cos a))))))
+                                                    (f (step nx nz feet 0.25)))
+                                               (if f (list nx nz f) (attempt (cdr sides))))))))
+                          (if moved
+                              (walk (car moved) (cadr moved) (list-ref moved 2) (+ steps 1))
+                              (named "blocked in segment " n " at " (list x feet z)))))))))))))
+
+(for-each
+  (lambda (site)
+    (let ((cave (site-cave (car site) (cadr site))))
+      (for-each
+        (lambda (mouth)
+          (caves-ready-near! (vector-ref mouth 0) (vector-ref mouth 2))
+          (test-equal (named "cave " site ": in through mouth at " (exact (round (vector-ref mouth 0))) ","
+                             (exact (round (vector-ref mouth 2))))
+                      #t (walk-mouth mouth 1))
+          (test-equal (named "cave " site ": out through mouth at " (exact (round (vector-ref mouth 0))) ","
+                             (exact (round (vector-ref mouth 2))))
+                      #t (walk-mouth mouth -1)))
+        (vector-ref cave 2))
+      (test-equal (named "cave " site ": main tunnel") #t (walk-tunnel cave))))
+  SITES)
+
+(test-end "caves")
+(sys-exit (test-exit-code))

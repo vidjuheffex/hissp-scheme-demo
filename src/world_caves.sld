@@ -28,7 +28,10 @@
           cave-shelter
           caves-ready-near!
           find-cave-site
-          cave-size-near)
+          cave-size-near
+          site-cave
+          capsule
+          solid-field)
   (import (scheme base)
           (scheme inexact)
           (scheme python)

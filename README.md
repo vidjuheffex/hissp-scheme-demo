@@ -304,13 +304,13 @@ Walking follows the same solid field used to build the mesh, putting your
 feet on the cave floor. Walls and ceilings stop you like cliffs do: you
 can't climb a tunnel's side or stand where your head would hit the rock.
 
-Run the cave regression checks without opening a window:
+Run the cave regression checks (SRFI 64, in Scheme) without opening a window:
 
 ```sh
-uv run python -m unittest discover -s tests -v
+uv run main.py tests/test_caves.scm
 ```
 
-They check the seed-4242 handoff caves for holes, repeated edges, reversed
+They check eight caves of world seed 4242 for holes, repeated edges, reversed
 faces, and walking through mouths and along the main tunnels. They also
 cover the cliff mouth at site `(0, 4)` and a cave opening exactly on the
 terrain surface, where a thin sheet of rock must not appear. Surface-net

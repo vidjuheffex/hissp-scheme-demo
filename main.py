@@ -2,7 +2,8 @@
 
 1. Put `.scheme-build/` on `sys.path` so generated modules are importable.
 2. Transpile the hissp-scheme core libraries plus the app `.sld` files.
-3. Evaluate `src/main.scm` as the entrypoint.
+3. Evaluate `src/main.scm` as the entrypoint, or the `.scm` file given
+   first on the command line (`uv run main.py tests/test_caves.scm`).
 
 All game logic lives in Scheme under `src/`.
 """
@@ -43,13 +44,18 @@ def main():
     for module in (*core_library_files(), *APP_SCHEME_LIBRARIES):
         transpile_scheme_file(module, output_dir=BUILD_DIR)
 
+    args = sys.argv[1:]
+    entrypoint = SCHEME_ENTRYPOINT
+    if args and args[0].endswith(".scm"):
+        entrypoint = Path(args.pop(0)).resolve()
+
     main_module = hissp.repl.force_main()
-    main_module.__dict__.setdefault("__file__", str(SCHEME_ENTRYPOINT))
-    sys.argv = [str(SCHEME_ENTRYPOINT), *sys.argv[1:]]
+    main_module.__dict__.setdefault("__file__", str(entrypoint))
+    sys.argv = [str(entrypoint), *args]
 
     SchemeLissp(
-        env=main_module.__dict__, evaluate=True, filename=str(SCHEME_ENTRYPOINT)
-    ).compile(SCHEME_ENTRYPOINT.read_text(encoding="utf8"))
+        env=main_module.__dict__, evaluate=True, filename=str(entrypoint)
+    ).compile(entrypoint.read_text(encoding="utf8"))
 
 
 if __name__ == "__main__":
