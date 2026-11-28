@@ -17,6 +17,7 @@ uniform float wetness;      // 0 dry to 1 soaked by rain
 
 #include "clouds.glsl"
 #include "mist.glsl"
+#include "flashlight.glsl"
 
 uniform mat4 p3d_ViewMatrixInverse;
 
@@ -243,6 +244,7 @@ void main() {
                     + 0.6 * smoothstep(0.5 - w, 0.5 + w, x);
         light = sky_ambient + p3d_LightSource[0].color * bands;
     }
+    light += flashlight_light(view_pos, N);
     // Backlit pads and leaves glow.
     float behind = pow(clamp(dot(V, -L), 0.0, 1.0), 3.0);
     vec3 glow = sun * behind * thin * 0.6 * vec3(1.0, 1.15, 0.55);

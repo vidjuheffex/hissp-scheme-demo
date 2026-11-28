@@ -56,6 +56,8 @@
             (list 'river-here #f)        ; (x z nearness) last worked out by `river-here`
             (list 'inside 0.0)           ; how far into a cave the player is, 0 to 1, see `update-cave!`
             (list 'sheltered 0.0)        ; 1 under a cave's rock, out of the rain and snow
+            (list 'flashlight-enabled #t) ; equipment can disable the automatic flashlight
+            (list 'flashlight-source #f) ; camera's spotlight and shadow map
             (list 'owls #f)              ; owl call sounds, see `update-owls!`
             (list 'bloom #f)             ; (days amounts) wildflower bloom, see `update-blooms!`
             (list 'bloom-override #f)    ; blooms forced from the REPL

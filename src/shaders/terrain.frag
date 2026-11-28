@@ -17,11 +17,11 @@ uniform float shadow_bias;
 uniform float wetness;      // 0 dry to 1 soaked by rain
 uniform float snow_cover;   // 0 none to 1 a fresh fall of snow
 uniform vec3 to_light;   // world direction toward the shadow light (sun or moon)
-uniform float lantern;   // 0 off to 1 on: the light the player carries in caves
 uniform float osg_FrameTime;
 
 #include "clouds.glsl"
 #include "mist.glsl"
+#include "flashlight.glsl"
 
 uniform mat4 p3d_ViewMatrixInverse;
 
@@ -34,9 +34,6 @@ in vec3 view_normal;
 in vec4 shadow_coord;
 
 out vec4 frag_color;
-
-const vec3 LANTERN_COLOR = vec3(1.0, 0.78, 0.5);
-const float LANTERN_REACH = 12.0;
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -199,16 +196,13 @@ void main() {
     vec3 light = (sky_ambient
                   + p3d_LightSource[0].color * ndl * sun_shadow() * cloud_shadow(world_pos, to_light))
                  * daylight * daylight;
-    // The lantern: warm light from the eye, fading out over its reach.
-    vec3 to_eye = p3d_ViewMatrixInverse[3].xyz - world_pos;
-    float dist = length(to_eye);
-    float facing = max(dot(n, to_eye / max(dist, 1e-4)), 0.0);
-    float reach = 1.0 - smoothstep(1.5, LANTERN_REACH, dist);
-    light += LANTERN_COLOR * lantern * reach * reach * (0.25 + 0.75 * facing) * 1.1;
+    light += flashlight_light(view_pos, view_normal);
     vec3 color = albedo * light;
-    if (cave.y >= 4.0)
-        color += reach * lantern * (vec3(0.18, 0.23, 0.25) * pow(1.0 - facing, 2.0)
+    if (cave.y >= 4.0) {
+        float facing = max(dot(normalize(view_normal), normalize(-view_pos)), 0.0);
+        color += flashlight_beam(view_pos) * (vec3(0.18, 0.23, 0.25) * pow(1.0 - facing, 2.0)
                + vec3(0.54, 0.46, 0.33) * (0.40 * drip_ring + 0.18 * pow(facing, 12.0)));
+    }
 
     float fog = smoothstep(fog_end * 0.3, fog_end, length(view_pos));
     color = mix(color, fog_color.rgb, fog);

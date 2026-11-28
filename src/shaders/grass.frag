@@ -18,6 +18,7 @@ uniform vec3 to_light;   // world direction toward the shadow light (sun or moon
 
 #include "clouds.glsl"
 #include "mist.glsl"
+#include "flashlight.glsl"
 
 uniform mat4 p3d_ViewMatrixInverse;
 
@@ -74,6 +75,8 @@ void main() {
     float occlusion = mix(0.7, 1.05, uv.y);
     vec3 light = (sky_ambient + p3d_LightSource[0].color * ndl * sun_shadow()
                   * cloud_shadow(world_pos, to_light)) * occlusion;
+    // Use the ground's normal for the beam too, so clumps blend with the soil.
+    light += flashlight_light(view_pos, up) * occlusion;
     vec3 albedo = texel.rgb * tint;
     if (flower >= 0.0) {
         // Petals are drawn grey-white in the sprite; their shading stays.

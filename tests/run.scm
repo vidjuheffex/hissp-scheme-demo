@@ -9,6 +9,7 @@
 
 (import (scheme base)
         (srfi 64)
+        (srfi 177)
         (rename (only sys exit) (exit sys-exit)))
 
 (test-begin "world")
@@ -19,6 +20,7 @@
          "test_plants.scm"
          "test_game.scm"
          "test_sounds.scm"
-         "test_caves.scm")
+         "test_caves.scm"
+         "test_flashlight.scm")
 (test-end "world")
 (sys-exit (test-exit-code))

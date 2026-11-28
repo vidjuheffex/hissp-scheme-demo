@@ -23,6 +23,7 @@ uniform vec3 to_light;           // world direction toward the shadow light (sun
 #include "clouds.glsl"
 #include "stars.glsl"
 #include "mist.glsl"
+#include "flashlight.glsl"
 
 in vec3 world_pos;
 in vec3 view_pos;
@@ -176,6 +177,7 @@ void main() {
     vec3 deep = vec3(0.02, 0.10, 0.20);
     vec3 body = mix(shallow, deep, smoothstep(0.0, 6.0, d));
     vec3 daylight = ambient_color * 0.45 + p3d_LightSource[0].color * max(L.y, 0.0) * shadow * 0.7;
+    daylight += flashlight_light(view_pos, mat3(transpose(p3d_ViewMatrixInverse)) * N);
     body *= daylight;
 
     // Reflection of the sky and clouds, stronger at grazing angles (Schlick

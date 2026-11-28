@@ -14,6 +14,7 @@
 ;;   (set-input! "fog_end" 80.0)   change a shader uniform immediately
 ;;   (set-time-of-day! 18.5)       set the clock: 0 to 24 hours
 ;;   (set-day-length! 0)           freeze the clock (60 = a day per minute)
+;;   (set-flashlight! #f)          disable the automatic flashlight; #t enables it
 ;;   (moon-phase)                  day count, phase name, lit fraction
 ;;   (set-day! 15)                 jump the moon's cycle (0 new, 15 full)
 ;;   (weather)                     cloud cover, rain or snow, wet ground, snow cover
@@ -40,7 +41,7 @@
 ;;   (reload!)                     force-reload everything
 
 (define-library (world game)
-  (export run setup! cave-outdoor-gain)
+  (export run setup! cave-outdoor-gain flashlight-strength set-flashlight! make-flashlight!)
   (import (scheme base)
     (scheme inexact)
     (scheme python)
@@ -67,7 +68,8 @@
     (only ursina.shader Shader)
     (only ursina.shaders.text_with_shadows_shader text-with-shadows-shader)
     (only pathlib Path)
-    (only panda3d.core Filename OmniBoundingVolume SamplerState Texture TexturePool)
+    (only panda3d.core Filename OmniBoundingVolume PerspectiveLens Point3 SamplerState
+          Spotlight Texture TexturePool)
     (rename (only panda3d.core loadPrcFileData)
             (loadPrcFileData load-prc-file-data)))
   (begin
@@ -102,6 +104,13 @@
     (define SHADOW-AREA (* CHUNK-SIZE 5))
     (define SUN-DISTANCE 900)
     (define MOON-DISTANCE 850)
+
+    ;; The hand position is relative to the camera: x right, y up, z forward.
+    (define FLASHLIGHT-OFFSET (list 0.25 -0.22 0.12))
+    (define FLASHLIGHT-AIM-DISTANCE 8.0)
+    (define FLASHLIGHT-REACH 24.0)
+    (define FLASHLIGHT-SPILL-ANGLE 65.0)
+    (define FLASHLIGHT-SHADOW-SIZE 2048)
 
     ;; --- assets ----------------------------------------------------------
 
@@ -139,7 +148,7 @@
 
     ;; Files that shaders share with `#include "name"`; GLSL has no includes
     ;; of its own, so the line is replaced by the file's text.
-    (define SHADER-INCLUDES (list "clouds.glsl" "stars.glsl" "mist.glsl"))
+    (define SHADER-INCLUDES (list "clouds.glsl" "stars.glsl" "mist.glsl" "flashlight.glsl"))
 
     (define (read-shader-source file)
       (let loop ((source (call-method (Path (asset-path "src" "shaders" file)) 'read-text))
@@ -1113,14 +1122,71 @@
     (define (current-phase)
       (moon-phase-at (state-ref 'day) (state-ref 'time-of-day)))
 
+    ;; A flashlight comes on as daylight fades outside or into a cave.
+    ;; Equipment owns the enable flag; keep it in state across reloads.
+    (define (flashlight-strength)
+      (if (state-ref 'flashlight-enabled)
+          (max (smooth-step 0.0 0.12 (state-ref 'inside))
+               (- 1.0 (smooth-step -0.08 0.20
+                                  (sin (sun-angle (state-ref 'time-of-day))))))
+          0.0))
+
+    ;; Pass the spotlight by name, so it cannot displace the sun in Panda's
+    ;; light array. The shader takes both its pose and its shadow map from
+    ;; this node, keeping the beam and shadows together as the camera turns.
+    (define (configure-flashlight! node root)
+      (let* ((source (call-method node 'node))
+             (lens (call-method source 'get-lens)))
+        (call-method lens 'set-fov (* 2.0 FLASHLIGHT-SPILL-ANGLE))
+        (call-method lens 'set-near-far 0.08 FLASHLIGHT-REACH)
+        ;; The camera lives outside the chunks' subtree. Panda must traverse
+        ;; their common scene root to place that camera correctly.
+        (call-method source 'set-scene (call-method root 'get-top))
+        ;; Water, grass and the sky already hide from shadow camera mask 1.
+        (call-method source 'set-camera-mask 1)
+        (when (call-method source 'is-shadow-caster)
+          (call-method source 'set-shadow-caster #t
+                       FLASHLIGHT-SHADOW-SIZE FLASHLIGHT-SHADOW-SIZE))
+        (apply call-method node 'set-pos FLASHLIGHT-OFFSET)
+        (call-method node 'look-at (call-method node 'get-parent)
+                     (Point3 0 0 FLASHLIGHT-AIM-DISTANCE))
+        (call-method root 'set-shader-input "flashlight_source" node)
+        (call-method root 'set-shader-input "flashlight_reach" FLASHLIGHT-REACH)
+        (call-method root 'set-shader-input "flashlight_spill_cos"
+                     (cos (* (/ PI 180.0) FLASHLIGHT-SPILL-ANGLE)))))
+
+    (define (make-flashlight! parent root)
+      (let ((node (call-method parent 'attach-new-node (Spotlight "flashlight"))))
+        (call-method (call-method node 'node) 'set-lens (PerspectiveLens))
+        (configure-flashlight! node root)
+        node))
+
+    (define (update-flashlight!)
+      (let* ((strength (flashlight-strength))
+             (on? (> strength 0.0))
+             (node (hash-table-ref/default state 'flashlight-source #f)))
+        (set-input! "flashlight" strength)
+        (set-input! "flashlight_shadows" (if on? 1.0 0.0))
+        (when node
+          (let ((source (call-method node 'node)))
+            (unless (eqv? on? (call-method source 'is-shadow-caster))
+              (call-method source 'set-shadow-caster on?
+                           FLASHLIGHT-SHADOW-SIZE FLASHLIGHT-SHADOW-SIZE))))))
+
+    (define (set-flashlight! enabled?)
+      (state-set! 'flashlight-enabled enabled?)
+      (when (state-ref 'world-root)
+        (update-flashlight!)))
+
     ;; The fog for a sky of `sky`: in a cave the distance goes dark, though
     ;; the sky seen out of the mouth stays as it is.
     (define (fog-for sky)
       (lerp-list sky CAVE-FOG (smooth-step 0.0 0.6 (state-ref 'inside))))
 
-    ;; Light the scene for the current hour and weather. Only does work when
-    ;; either has changed since the last call.
+    ;; Update the flashlight each frame. The sky and outdoor lighting only
+    ;; need rebuilding when the hour, weather or cave fog changes.
     (define (apply-time!)
+      (update-flashlight!)
       (let* ((hours (state-ref 'time-of-day))
              (weather (state-ref 'weather))
              (cover (car weather))
@@ -1956,8 +2022,7 @@
             (state-set! 'footsteps (list (car steps) phase (list x z)))))))
 
     ;; How far into a cave the player's eyes are, and how sheltered, eased so
-    ;; stepping in and out doesn't snap; brings the lantern up as daylight
-    ;; fades.
+    ;; stepping in and out doesn't snap.
     (define (update-cave! player dt)
       (let* ((x (attribute-ref player 'x))
              (z (attribute-ref player 'z))
@@ -1969,8 +2034,7 @@
              (sheltered (state-ref 'sheltered))
              (cover (+ sheltered (* (- (cave-shelter x eye z ground) sheltered) (- 1.0 (exp (* -6.0 dt)))))))
         (state-set! 'inside (if (< now 0.001) 0.0 now))
-        (state-set! 'sheltered (if (< cover 0.001) 0.0 cover))
-        (set-input! "lantern" (smooth-step 0.0 0.12 now))))
+        (state-set! 'sheltered (if (< cover 0.001) 0.0 cover))))
 
     (define (world-update)
       (keep-out-of-trunks! (state-ref 'player))
@@ -2022,14 +2086,18 @@
     ;; Fog, shadows and the lighting for the current hour. Runs at setup and
     ;; after the scene library reloads, so edits to these show up at once.
     (define (apply-scene!)
+      (let* ((root (state-ref 'world-root))
+             (node (hash-table-ref/default state 'flashlight-source #f)))
+        (if node
+            (configure-flashlight! node root)
+            (state-set! 'flashlight-source (make-flashlight! camera root))))
       (for-each
         (lambda (input) (set-input! (car input) (cadr input)))
         (list (list "sea_level" SEA-LEVEL)
               (list "shadow_bias" SHADOW-BIAS)
               (list "grass_fade" (make-tuple (car GRASS-FADE) (cadr GRASS-FADE)))
               (list "mist_base" SEA-LEVEL)
-              (list "mist" (state-ref 'mist))
-              (list "lantern" 0.0)))
+              (list "mist" (state-ref 'mist))))
       (let ((sky (state-ref 'sky)))
         (when sky
           (call-method (car sky) 'set-shader-input "mist_base" SEA-LEVEL)
@@ -2110,7 +2178,7 @@
             "shaders/plant.vert" "shaders/plant.frag"
             "shaders/moon.vert" "shaders/moon.frag"
             "shaders/sky.vert" "shaders/sky.frag" "shaders/clouds.frag" "shaders/clouds.glsl" "shaders/stars.glsl"
-            "shaders/mist.glsl"
+            "shaders/mist.glsl" "shaders/flashlight.glsl"
             "shaders/precip.vert" "shaders/precip.frag"
             "shaders/life.vert" "shaders/life.frag"
             "shaders/wind.vert" "shaders/wind.frag"))

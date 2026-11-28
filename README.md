@@ -11,7 +11,8 @@ uv run main.py 1234   # revisit a world by seed
 Controls: WASD to walk (Shift to sprint), mouse to look, Escape to toggle
 mouse lock. You can wade into water up to about thigh deep, slowing as it gets deeper, but no deeper.
 You can't walk up cliffs or canyon walls, but you can walk off them, and fall.
-Caves open in canyon walls and escarpments; walk in and a lantern lights the way.
+Caves open in canyon walls and escarpments. A flashlight follows the mouse,
+turning on as it gets dark in caves or outside.
 Your position (meters) is shown in the top left corner.
 
 `hissp-scheme` comes from GitHub, pinned to a commit in `uv.lock`
@@ -33,13 +34,13 @@ uv run --no-sync main.py   # plain `uv run` reinstalls the locked version
 - `src/world_game.sld` — `(world game)`: Ursina scene, player, sun, chunk streaming,
   live-reload and REPL (chunks are generated on an SRFI 18 worker thread)
 - `src/shaders/` — GLSL for the terrain (biome ground cover, forest floor, rock and its strata, beaches, snow,
-  wet ground, cave darkness and lantern light), water (sky and cloud reflections, noise chop, surf foam, soft
+  wet ground and cave darkness), water (sky and cloud reflections, noise chop, surf foam, soft
   shoreline that laps up the beach, rain ripples), grass clumps (wind, fade-out), desert plants
   and trees (surface detail, swaying, snow on branches), the moon
   (phase shading), the sky and clouds, rain and snow, wildlife, wind lines, and the
   coordinates readout's text; `clouds.glsl` is
   the cloud layer, spliced into every shader with `#include "clouds.glsl"` (and
-  likewise `stars.glsl` and `mist.glsl`)
+  likewise `stars.glsl`, `mist.glsl` and `flashlight.glsl`)
 - `assets/textures/` — tiling grass and rock textures, the grass clump sprites, the moon
 - `assets/sounds/` — ambient loops (wind, rain, birds, crickets, water, woods, river), owl calls, footsteps and thunder, synthesized by
   `tools/make_sounds.py` (`uv run --no-project --with numpy --with soundfile tools/make_sounds.py`)
@@ -59,7 +60,8 @@ uv run main.py tests/run.scm             # every suite, about a minute and a hal
 uv run main.py tests/test_terrain.scm    # one suite while working on it
 ```
 
-The suites need no window and use world seed 4242 so results repeat:
+The suites need no window and use world seed 4242 so results repeat. The
+flashlight shader checks render into a small offscreen OpenGL buffer:
 
 - `test_state.scm`: values and the seed survive in `(world state)`.
 - `test_terrain.scm`: noise ranges, seeds giving the same and different worlds,
@@ -74,6 +76,12 @@ The suites need no window and use world seed 4242 so results repeat:
 - `test_plants.scm`: valid plant meshes, the same plants every time, trunks on dry
   ground inside their chunk, nothing in a full clearing.
 - `test_caves.scm`: see [Caves](#caves).
+- `test_game.scm`: cave sound fading and the flashlight coming on at night
+  and in caves, fading at dawn, dusk and entrances, and equipment disabling it.
+- `test_flashlight.scm`: the actual shader's main spot, dim directional spill,
+  light coming from the hand, distance falloff, range, switching both beams off,
+  an object casting a shadow that moves with it, shader-bearing casters,
+  and the player camera living outside the world's geometry subtree.
 
 Shared checks (mesh validity, ranges, test names) are in `tests/helpers.scm`.
 Each suite is an R7RS program, so its imports come first: `(import (scheme base))`
@@ -97,6 +105,8 @@ Type Scheme into the terminal that started the game, one form per line:
 (define FOG-END 40.0)      ; then (apply-scene!) to push it
 (set-time-of-day! 18.5)    ; 6:30pm; the clock keeps running
 (set-day-length! 0)        ; freeze the clock (60 = a day per minute)
+(set-flashlight! #f)       ; disable the automatic flashlight; #t enables it
+(flashlight-strength)     ; current automatic brightness, 0 off to 1 on
 (moon-phase)               ; day count, phase name, lit fraction
 (set-day! 15)              ; jump the moon's cycle (0 new, 7 first quarter, 15 full)
 (weather)                  ; cloud cover, precipitation, rain or snow, wetness, snow cover, wind
@@ -131,6 +141,37 @@ is the moon, so full moons give soft blue shadows. The moonlight, night sky
 and ambient colours (`MOON-COLOR`, `MOON-BRIGHTNESS`, `SKY-MOONLIT`,
 `AMBIENT-NEW-MOON`, `AMBIENT-FULL-MOON`) are at the top of
 `src/world_game.sld`.
+
+The flashlight fades on as the sun gets low or daylight fades into a cave,
+and turns off again in daylight. It follows mouse look in both directions
+from a position below and right of the eye, aiming at the view's center
+8 m away. Nearby walls receive light from that hand position. A faint, wider
+spill reveals rock beyond the main spot; both beams stay directional and
+fade with distance, with no all-around player glow. The same light is used
+indoors and outside, on terrain, grass, plants, rocks and water.
+
+Rocks, plants, cave formations and the ground cast shadows into both the
+spot and its spill. One camera on the flashlight draws a 2048-pixel depth
+map; a small filter softens its edges. The shader uses that camera's position
+and direction too, so shadows stay with the beam as you look around.
+The shadow camera traverses the full scene root, which contains both the
+player camera and the chunk subtree; using just the chunks as its scene
+leaves the map empty when the player camera is outside that subtree.
+The shadow pass is off whenever the flashlight is off. Grass clumps and
+water receive shadows but do not cast them, as with the sun's shadows.
+
+The shared beam is in `src/shaders/flashlight.glsl`: `FLASHLIGHT_COLOR` sets
+its tint, `FLASHLIGHT_INNER_ANGLE` and `FLASHLIGHT_OUTER_ANGLE` its 6° bright
+center and 22° soft outer edge, and `FLASHLIGHT_SPILL` the spill's 12% share.
+`FLASHLIGHT_HALF_DISTANCE` sets where distance alone halves the light,
+9 m away. The last quarter of the range eases to zero.
+The scene constants in `src/world_game.sld` set the actual light:
+`FLASHLIGHT-OFFSET`, `FLASHLIGHT-AIM-DISTANCE`, `FLASHLIGHT-REACH` (24 m),
+`FLASHLIGHT-SPILL-ANGLE` (65°), and `FLASHLIGHT-SHADOW-SIZE`.
+Angles are from the beam's axis.
+`(set-flashlight! #f)` disables it everywhere;
+`#t` restores automatic lighting. This enable flag survives hot reloads and
+can be driven by equipment later; a flashlight is available by default.
 
 Stars and the Milky Way come out as the sky darkens, drawn in `sky.frag`.
 They wheel across the sky with the sun's path, rising and setting through the
@@ -334,7 +375,7 @@ curtains with several tips. Stalagmites can form squat, terraced mounds or
 tall spires. Where a floor and ceiling join, columns flare at both ends.
 The generator measures each opening separately, including stacked tunnels,
 and reserves headroom along the passage centerline. The formations pick
-up the surrounding rock grain and the player's lantern light. You can
+up the surrounding rock grain and the player's flashlight beam. You can
 walk around stalagmites and columns.
 
 Some chambers collect a shallow pool in a depression in the rock floor.
@@ -358,8 +399,9 @@ Nothing grows in front of a mouth: no trees, plants or rocks within
 cave chunk only takes a little longer to appear.
 
 Daylight reaches about 2 m in from a mouth and is gone by 20 m (`DARK`).
-Inside, you carry a lantern, warm light out to about 12 m
-(`LANTERN_COLOR`, `LANTERN_REACH` in `src/shaders/terrain.frag`). The fog closes in dark,
+The flashlight comes on as that daylight fades: a bright spot with dimmer
+spill across the surrounding rock. Outside both beams the cave stays dark.
+The fog closes in dark,
 rain and snow stop, and the sound of steps and occasional drips carries
 through the chamber.
 
