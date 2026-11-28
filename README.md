@@ -60,6 +60,17 @@ uv run main.py tests/run.scm             # every suite, including cave topology 
 uv run main.py tests/test_terrain.scm    # one suite while working on it
 ```
 
+Before committing, install the repository's pre-commit and pre-push hooks:
+
+```sh
+uv sync --dev
+uv run pre-commit install --install-hooks
+uv run pre-commit run --all-files         # repository checks and Ruff
+```
+
+The pre-push hook also runs every Scheme test. GitHub Actions runs the same
+pre-commit checks and full test suite on pull requests and pushes to `main`.
+
 The suites need no window and use world seed 4242 so results repeat. The
 flashlight shader checks render into a small offscreen OpenGL buffer:
 

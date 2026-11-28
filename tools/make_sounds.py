@@ -33,8 +33,10 @@ def shaped_noise(n, lo, hi, tilt=0.0):
     f = np.fft.rfftfreq(n, 1.0 / RATE)
     f[0] = 1.0
     octave = np.log2(f)
-    band = np.clip((octave - np.log2(lo)) * 3.0 + 0.5, 0, 1) * np.clip((np.log2(hi) - octave) * 3.0 + 0.5, 0, 1)
-    x = np.fft.irfft(spectrum * band * f ** tilt, n)
+    band = np.clip((octave - np.log2(lo)) * 3.0 + 0.5, 0, 1) * np.clip(
+        (np.log2(hi) - octave) * 3.0 + 0.5, 0, 1
+    )
+    x = np.fft.irfft(spectrum * band * f**tilt, n)
     return x / (np.std(x) + 1e-9)
 
 
@@ -68,7 +70,7 @@ def reverb(x, length, wet):
     t = np.arange(seconds(length)) / RATE
     tail = rng.normal(size=len(t)) * np.exp(-6.9 * t / length)
     tail = np.convolve(tail, np.ones(8) / 8, "same")  # darker tail
-    tail /= np.sqrt(np.sum(tail ** 2))
+    tail /= np.sqrt(np.sum(tail**2))
     padded = np.zeros(len(x))
     padded[: len(tail)] = tail
     wet_part = np.fft.irfft(np.fft.rfft(x) * np.fft.rfft(padded), len(x))
@@ -90,7 +92,9 @@ def save(name, x, peak=0.85):
     x = x - x.mean()
     x = x * (peak / np.max(np.abs(x)))
     (OUT / name).parent.mkdir(parents=True, exist_ok=True)
-    soundfile.write(OUT / f"{name}.ogg", x.astype(np.float32), RATE, format="OGG", subtype="VORBIS")
+    soundfile.write(
+        OUT / f"{name}.ogg", x.astype(np.float32), RATE, format="OGG", subtype="VORBIS"
+    )
     print(f"{name}.ogg  {len(x) / RATE:.2f} s")
 
 
@@ -101,9 +105,11 @@ def wind():
     low = shaped_noise(n, 40, 450, -0.6)
     high = shaped_noise(n, 250, 1600, -0.4)
     whistle = shaped_noise(n, 520, 700)
-    return (low * (0.45 + 0.55 * gust)
-            + high * (0.1 + 0.9 * gust ** 2 * (0.6 + 0.4 * flutter))
-            + whistle * 0.25 * gust ** 4)
+    return (
+        low * (0.45 + 0.55 * gust)
+        + high * (0.1 + 0.9 * gust**2 * (0.6 + 0.4 * flutter))
+        + whistle * 0.25 * gust**4
+    )
 
 
 def rain():
@@ -142,20 +148,28 @@ def phrase(kind, pitch):
             notes.append((k / rate, chirp(pitch, pitch * 1.18, 0.03)))
     elif kind == "whistle":  # slow slurred whistles with a little vibrato
         t0 = 0.0
-        for k in range(rng.integers(2, 5)):
+        for _k in range(rng.integers(2, 5)):
             length = rng.uniform(0.18, 0.35)
             m = seconds(length)
             s = np.linspace(0, 1, m)
             base = pitch * rng.uniform(0.7, 1.0)
-            f = base * (1 + 0.25 * np.sin(np.pi * s) * rng.choice([-1, 1])) + 40 * np.sin(2 * np.pi * 28 * s * length)
+            f = base * (
+                1 + 0.25 * np.sin(np.pi * s) * rng.choice([-1, 1])
+            ) + 40 * np.sin(2 * np.pi * 28 * s * length)
             notes.append((t0, tone(f, hann(m) ** 0.6, (1.0, 0.05))))
             t0 += length + rng.uniform(0.05, 0.2)
     else:  # warble: a wobbly run of notes
         length = rng.uniform(0.5, 0.9)
         m = seconds(length)
         s = np.arange(m) / RATE
-        f = pitch + 700 * np.sin(2 * np.pi * rng.uniform(18, 30) * s) + 500 * np.sin(2 * np.pi * 3 * s)
-        notes.append((0.0, tone(f, hann(m) ** 0.4 * (0.6 + 0.4 * np.sin(2 * np.pi * 9 * s)))))
+        f = (
+            pitch
+            + 700 * np.sin(2 * np.pi * rng.uniform(18, 30) * s)
+            + 500 * np.sin(2 * np.pi * 3 * s)
+        )
+        notes.append(
+            (0.0, tone(f, hann(m) ** 0.4 * (0.6 + 0.4 * np.sin(2 * np.pi * 9 * s))))
+        )
     return notes
 
 
@@ -164,7 +178,9 @@ def birds():
     out = np.zeros(n)
     for _ in range(7):
         kind = rng.choice(["tweet", "trill", "whistle", "warble"])
-        pitch = {"tweet": 3600, "trill": 4200, "whistle": 2800, "warble": 3300}[kind] * rng.uniform(0.8, 1.2)
+        pitch = {"tweet": 3600, "trill": 4200, "whistle": 2800, "warble": 3300}[
+            kind
+        ] * rng.uniform(0.8, 1.2)
         near = rng.uniform(0.2, 1.0)
         t = rng.uniform(0, 8)
         while t < 60:
@@ -173,7 +189,7 @@ def birds():
                 place(song, note, seconds(start))
             if near < 0.6:  # far off: quieter and duller
                 song = lowpass(song, 2500 + 4000 * near)
-            place(out, song * near ** 1.5, seconds(t))
+            place(out, song * near**1.5, seconds(t))
             t += rng.uniform(4, 11)
     out += shaped_noise(n, 150, 2000, -0.8) * 0.01  # the open air
     return reverb(out, 1.4, 0.35)
@@ -191,7 +207,9 @@ def thrush(pitch):
         for length, f0, f1 in motif:
             m = seconds(length)
             s = np.linspace(0, 1, m)
-            notes.append((t, tone(f0 + (f1 - f0) * s, hann(m) ** 0.5, (1.0, 0.18, 0.04))))
+            notes.append(
+                (t, tone(f0 + (f1 - f0) * s, hann(m) ** 0.5, (1.0, 0.18, 0.04)))
+            )
             t += length + 0.03
         t += 0.12
     return notes
@@ -205,7 +223,9 @@ def drumming():
     while t < 1.1 and loud > 0.2:
         m = seconds(0.03)
         s = np.arange(m) / RATE
-        knock = (np.sin(2 * np.pi * f * s) + 0.5 * np.sin(2 * np.pi * f * 2.3 * s)) * np.exp(-s / 0.006)
+        knock = (
+            np.sin(2 * np.pi * f * s) + 0.5 * np.sin(2 * np.pi * f * 2.3 * s)
+        ) * np.exp(-s / 0.006)
         place(out, knock * loud, seconds(t))
         t += 1.0 / rate
         rate *= 0.985
@@ -228,7 +248,7 @@ def woods():
                 place(song, note, seconds(start))
             if near < 0.6:
                 song = lowpass(song, 2500 + 4000 * near)
-            place(out, song * near ** 1.5, seconds(t))
+            place(out, song * near**1.5, seconds(t))
             t += rng.uniform(3, 8)
     for t in rng.uniform(0, 60, 2):
         place(out, lowpass(drumming(), 3000) * rng.uniform(0.3, 0.6), seconds(t))
@@ -242,10 +262,19 @@ def hoo(pitch, length):
     m = seconds(length)
     s = np.linspace(0, 1, m)
     t = np.arange(m) / RATE
-    f = pitch * (0.93 + 0.09 * np.sin(np.pi * np.minimum(s * 2.5, 1.0) / 2) - 0.05 * s ** 2)
-    env = np.clip(t / 0.06, 0, 1) ** 2 * np.clip((m - np.arange(m)) / (0.45 * m), 0, 1) ** 1.5
+    f = pitch * (
+        0.93 + 0.09 * np.sin(np.pi * np.minimum(s * 2.5, 1.0) / 2) - 0.05 * s**2
+    )
+    env = (
+        np.clip(t / 0.06, 0, 1) ** 2
+        * np.clip((m - np.arange(m)) / (0.45 * m), 0, 1) ** 1.5
+    )
     voice = tone(f, env, (1.0, 0.22, 0.05))
-    breath = shaped_noise(m, pitch * 0.8, pitch * 3, -0.8) * env * (0.03 + 0.1 * np.exp(-t / 0.04))
+    breath = (
+        shaped_noise(m, pitch * 0.8, pitch * 3, -0.8)
+        * env
+        * (0.03 + 0.1 * np.exp(-t / 0.04))
+    )
     return voice + breath
 
 
@@ -277,7 +306,11 @@ def crickets():
             place(chirp_sound, syllable, seconds(k / rate))
         offset = rng.uniform(0, period)
         for k in range(int(round(n / period))):
-            place(out, chirp_sound * gain * rng.uniform(0.85, 1.0), int(offset + k * period))
+            place(
+                out,
+                chirp_sound * gain * rng.uniform(0.85, 1.0),
+                int(offset + k * period),
+            )
     # The rest of the field, far off: a pulsing haze around 4.5 kHz.
     s = np.arange(n) / RATE
     chorus = shaped_noise(n, 4000, 5200) * (0.5 + 0.5 * np.sin(2 * np.pi * 30 * s)) ** 2
@@ -300,8 +333,10 @@ def water():
         rush = np.minimum(s / 0.25, 1.0) ** 2 * np.exp(-np.maximum(s - 0.25, 0) * 4)
         fizz = np.clip((s - 0.2) / 0.15, 0, 1) * np.exp(-np.maximum(s - 0.35, 0) * 3.5)
         size = rng.uniform(0.5, 1.0) * (1 - s) ** 2  # die away to nothing
-        lap = (shaped_noise(m, 70, 900, -0.5) * rush
-               + shaped_noise(m, 1200, 6000, -0.3) * fizz * 0.25)
+        lap = (
+            shaped_noise(m, 70, 900, -0.5) * rush
+            + shaped_noise(m, 1200, 6000, -0.3) * fizz * 0.25
+        )
         place(out, lap * size, seconds(start))
     return reverb(out, 0.5, 0.2)
 
@@ -337,16 +372,27 @@ def grains(out, count, start, spread, lo, hi, gain):
     for _ in range(count):
         m = seconds(rng.uniform(0.001, 0.004))
         at = seconds(start + spread * rng.beta(1.5, 3.0))
-        place(out, shaped_noise(m + 64, lo, hi)[:m] * burst(m, 0.0003, 0.0008) * gain * rng.lognormal(0, 0.5), at)
+        place(
+            out,
+            shaped_noise(m + 64, lo, hi)[:m]
+            * burst(m, 0.0003, 0.0008)
+            * gain
+            * rng.lognormal(0, 0.5),
+            at,
+        )
 
 
 def bubble(f0, rise):
     """A ringing air bubble, the sound of water (van den Doel's model): a sine
     at `f0` Hz dying away, smaller bubbles higher and quicker, gliding up in
     pitch by `rise` times the decay rate."""
-    decay = 0.13 * f0 + 0.0072 * f0 ** 1.5
+    decay = 0.13 * f0 + 0.0072 * f0**1.5
     t = np.arange(seconds(5.0 / decay)) / RATE
-    return tone(f0 * (1 + rise * decay * t), np.exp(-decay * t) * np.clip(t / 0.0005, 0, 1), (1.0,))
+    return tone(
+        f0 * (1 + rise * decay * t),
+        np.exp(-decay * t) * np.clip(t / 0.0005, 0, 1),
+        (1.0,),
+    )
 
 
 def bubbles(out, count, start, spread, lo, hi, rise, gain):
@@ -355,7 +401,11 @@ def bubbles(out, count, start, spread, lo, hi, rise, gain):
     for _ in range(count):
         f0 = np.exp(rng.uniform(np.log(lo), np.log(hi)))
         loud = gain * rng.lognormal(0, 0.5) * (f0 / 1000.0) ** -0.4
-        place(out, bubble(f0, rise * rng.uniform(0.5, 1.5)) * loud, seconds(start + spread * rng.beta(1.2, 3.0)))
+        place(
+            out,
+            bubble(f0, rise * rng.uniform(0.5, 1.5)) * loud,
+            seconds(start + spread * rng.beta(1.2, 3.0)),
+        )
 
 
 def footstep(surface):
@@ -365,42 +415,90 @@ def footstep(surface):
     for at, gain in ((0.0, 1.0), (toe, rng.uniform(0.5, 0.8))):
         if surface == "grass":
             m = seconds(0.25)
-            place(out, gain * (shaped_noise(m, 50, 260) * burst(m, 0.004, 0.035) * 0.6
-                               + shaped_noise(m, 900, 6000, -0.3) * burst(m, 0.01, 0.06)
-                               + shaped_noise(m, 2500, 9000) * burst(m, 0.03, 0.09) * 0.3), seconds(at))
+            place(
+                out,
+                gain
+                * (
+                    shaped_noise(m, 50, 260) * burst(m, 0.004, 0.035) * 0.6
+                    + shaped_noise(m, 900, 6000, -0.3) * burst(m, 0.01, 0.06)
+                    + shaped_noise(m, 2500, 9000) * burst(m, 0.03, 0.09) * 0.3
+                ),
+                seconds(at),
+            )
         elif surface == "dirt":
             m = seconds(0.2)
-            place(out, gain * (shaped_noise(m, 60, 400) * burst(m, 0.003, 0.03)
-                               + shaped_noise(m, 400, 3000) * burst(m, 0.006, 0.05) * 0.25), seconds(at))
+            place(
+                out,
+                gain
+                * (
+                    shaped_noise(m, 60, 400) * burst(m, 0.003, 0.03)
+                    + shaped_noise(m, 400, 3000) * burst(m, 0.006, 0.05) * 0.25
+                ),
+                seconds(at),
+            )
             grains(out, int(30 * gain), at, 0.12, 1500, 7000, 0.6)
         elif surface == "rock":
             # A dull, unpitched thud: solid stone doesn't ring, so no tones.
             m = seconds(0.2)
-            place(out, gain * (shaped_noise(m, 55, 280, -0.4) * burst(m, 0.001, 0.022)
-                               + shaped_noise(m, 250, 1400, -0.6) * burst(m, 0.0008, 0.01) * 0.45
-                               + shaped_noise(m, 900, 4500, -0.5) * burst(m, 0.008, 0.045) * 0.07), seconds(at))
+            place(
+                out,
+                gain
+                * (
+                    shaped_noise(m, 55, 280, -0.4) * burst(m, 0.001, 0.022)
+                    + shaped_noise(m, 250, 1400, -0.6) * burst(m, 0.0008, 0.01) * 0.45
+                    + shaped_noise(m, 900, 4500, -0.5) * burst(m, 0.008, 0.045) * 0.07
+                ),
+                seconds(at),
+            )
             grains(out, int(8 * gain), at + 0.005, 0.06, 1800, 5000, 0.25)
         elif surface == "snow":
             m = seconds(0.3)
-            place(out, gain * shaped_noise(m, 40, 200) * burst(m, 0.01, 0.05) * 0.7, seconds(at))
+            place(
+                out,
+                gain * shaped_noise(m, 40, 200) * burst(m, 0.01, 0.05) * 0.7,
+                seconds(at),
+            )
             grains(out, int(110 * gain), at, 0.2, 900, 5000, 0.5)
         elif at == 0.0:  # water: the foot plunging in, the leg pulled out, then drips
             m = seconds(0.3)
-            place(out, shaped_noise(m, 1500, 12000, -0.2) * burst(m, 0.002, 0.045) * 0.45, 0)  # spray
-            place(out, lowpass(shaped_noise(m, 150, 1500, -0.8) * burst(m, 0.015, 0.05), 1200) * 0.2, 0)
+            place(
+                out,
+                shaped_noise(m, 1500, 12000, -0.2) * burst(m, 0.002, 0.045) * 0.45,
+                0,
+            )  # spray
+            place(
+                out,
+                lowpass(shaped_noise(m, 150, 1500, -0.8) * burst(m, 0.015, 0.05), 1200)
+                * 0.2,
+                0,
+            )
             bubbles(out, 160, 0.0, 0.1, 600, 6000, 0.12, 0.25)
             bubbles(out, 3, 0.01, 0.06, 250, 500, 0.3, 0.25)  # gloops
             lift = rng.uniform(0.18, 0.26)
-            place(out, shaped_noise(m, 2000, 12000, -0.2) * burst(m, 0.004, 0.04) * 0.25, seconds(lift))
+            place(
+                out,
+                shaped_noise(m, 2000, 12000, -0.2) * burst(m, 0.004, 0.04) * 0.25,
+                seconds(lift),
+            )
             bubbles(out, 70, lift, 0.1, 700, 5000, 0.15, 0.18)
-            bubbles(out, 30, 0.06, 0.35, 2500, 7000, 0.2, 0.12)  # droplets pattering back
-            bubbles(out, 8, lift + 0.08, 0.35, 1200, 3500, 0.3, 0.15)  # drips plinking back
+            bubbles(
+                out, 30, 0.06, 0.35, 2500, 7000, 0.2, 0.12
+            )  # droplets pattering back
+            bubbles(
+                out, 8, lift + 0.08, 0.35, 1200, 3500, 0.3, 0.15
+            )  # drips plinking back
     fade = np.ones(len(out))
-    fade[-seconds(0.05):] = np.linspace(1, 0, seconds(0.05))
+    fade[-seconds(0.05) :] = np.linspace(1, 0, seconds(0.05))
     return out * fade
 
 
-FOOTSTEP_LOUDNESS = {"grass": 0.5, "dirt": 0.65, "rock": 0.7, "snow": 0.55, "water": 0.7}
+FOOTSTEP_LOUDNESS = {
+    "grass": 0.5,
+    "dirt": 0.65,
+    "rock": 0.7,
+    "snow": 0.55,
+    "water": 0.7,
+}
 
 
 def thunder(near):
@@ -414,20 +512,29 @@ def thunder(near):
     while at < 6.0:
         rise, fall = rng.uniform(0.05, 0.3), rng.uniform(0.5, 1.6)
         s = t - at
-        roll += loud * np.where(s < 0, 0, np.clip(s / rise, 0, 1) * np.exp(-np.maximum(s - rise, 0) / fall))
+        roll += loud * np.where(
+            s < 0, 0, np.clip(s / rise, 0, 1) * np.exp(-np.maximum(s - rise, 0) / fall)
+        )
         at += rng.uniform(0.4, 1.4)
         loud *= rng.uniform(0.55, 0.9)
     roll *= np.clip((n - np.arange(n)) / seconds(1.5), 0, 1)
     out = shaped_noise(n, 22, 160 if not near else 260, -0.9) * roll
-    out += shaped_noise(n, 150, 500, -0.6) * roll * 0.25  # so small speakers hear it too
+    out += (
+        shaped_noise(n, 150, 500, -0.6) * roll * 0.25
+    )  # so small speakers hear it too
     if near:
-        out += shaped_noise(n, 150, 1200, -0.5) * roll ** 2 * 0.35
+        out += shaped_noise(n, 150, 1200, -0.5) * roll**2 * 0.35
         m = seconds(1.0)
         out[:m] += shaped_noise(m, 500, 9000, -0.3) * burst(m, 0.002, 0.07) * 1.8
         for _ in range(rng.integers(4, 9)):  # ripping
             m = seconds(rng.uniform(0.04, 0.12))
-            place(out, shaped_noise(m, 300, 4000, -0.4) * burst(m, 0.003, 0.03) * rng.uniform(0.5, 1.2),
-                  seconds(rng.uniform(0.02, 0.7)))
+            place(
+                out,
+                shaped_noise(m, 300, 4000, -0.4)
+                * burst(m, 0.003, 0.03)
+                * rng.uniform(0.5, 1.2),
+                seconds(rng.uniform(0.02, 0.7)),
+            )
     return reverb(out, 1.8, 0.3)
 
 
@@ -443,19 +550,23 @@ def cave_space(x, wet, tail, reflect=1.0):
     t = np.arange(m) / RATE
     low = shaped_noise(m, 90, 1400, -0.3) * np.exp(-6.9 * t / tail)
     high = shaped_noise(m, 1400, 7000, -0.4) * np.exp(-6.9 * t / (0.4 * tail)) * 0.7
-    diffuse = (low + high) * np.clip(t / 0.03, 0, 1)  # builds up as the reflections thicken
-    diffuse *= wet / np.sqrt(np.sum(diffuse ** 2))
+    diffuse = (low + high) * np.clip(
+        t / 0.03, 0, 1
+    )  # builds up as the reflections thicken
+    diffuse *= wet / np.sqrt(np.sum(diffuse**2))
     early = np.zeros(m)
     for at in np.sort(rng.uniform(0.012, 0.14, rng.integers(5, 8))):
         early[seconds(at)] += rng.uniform(0.3, 0.6) * np.exp(-at / 0.09)
-    early = reflect * np.convolve(early, hann(6) / np.sum(hann(6)), "same")  # rock takes the edge off
+    early = reflect * np.convolve(
+        early, hann(6) / np.sum(hann(6)), "same"
+    )  # rock takes the edge off
     ir = early + diffuse
     n = len(x) + m
     dry = np.zeros(n)
     dry[: len(x)] = x
     out = dry + np.fft.irfft(np.fft.rfft(dry) * np.fft.rfft(ir, n), n)
     fade = np.ones(n)
-    fade[-seconds(0.15):] = np.linspace(1, 0, seconds(0.15))
+    fade[-seconds(0.15) :] = np.linspace(1, 0, seconds(0.15))
     return out * fade
 
 
@@ -514,8 +625,20 @@ if __name__ == "__main__":
     make("river", lambda: save("river", river()))
     make("woods", lambda: save("woods", woods()))
     make("owls", lambda: [save(f"owl-{k}", owl(k == 1), 0.8) for k in (1, 2)])
-    make("steps", lambda: [save(f"steps/{surface}-{k}", footstep(surface), loudness)
-                           for surface, loudness in FOOTSTEP_LOUDNESS.items() for k in range(1, 5)])
-    make("thunder", lambda: [save(f"thunder-{kind}-{k}", thunder(kind == "near"), 0.9)
-                             for kind in ("near", "far") for k in (1, 2)])
+    make(
+        "steps",
+        lambda: [
+            save(f"steps/{surface}-{k}", footstep(surface), loudness)
+            for surface, loudness in FOOTSTEP_LOUDNESS.items()
+            for k in range(1, 5)
+        ],
+    )
+    make(
+        "thunder",
+        lambda: [
+            save(f"thunder-{kind}-{k}", thunder(kind == "near"), 0.9)
+            for kind in ("near", "far")
+            for k in (1, 2)
+        ],
+    )
     make("cave", make_cave)

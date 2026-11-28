@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import hissp.repl
-
 from hissp_scheme import core_library_files
 from hissp_scheme.reader import SchemeLissp, transpile_scheme_file
 
